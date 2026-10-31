@@ -480,6 +480,22 @@ export function createRakutenConnector(
             depositPageText = await readBodyInnerText(page);
           }
 
+          // 定存總額只出現在首頁紅卡 DOM（加密 JSON 內取不到），且貸款階段會切離
+          // 首頁，故在此（仍停留首頁時）擷取一次首頁文字，專供定存彙總解析使用。
+          // 若上面備援已讀過整頁文字就直接沿用，不重複讀。
+          let dashboardPageText: string | undefined = depositPageText;
+          if (
+            dashboardPageText === undefined &&
+            remainingMs(syncStartedAt, stage) > 1000
+          ) {
+            try {
+              dashboardPageText = await readBodyInnerText(page);
+            } catch {
+              // 讀首頁文字失敗不影響主流程：定存是加分項，抓不到就略過。
+              dashboardPageText = undefined;
+            }
+          }
+
           // --- 貸款：點選單「我的貸款」後 CLNQU0001 解密後的回應 ---
           stage = "fetch_loan";
           switchTimedStage("loanMs");
@@ -555,6 +571,7 @@ export function createRakutenConnector(
             depositPageText,
             loanPageText,
             depositTxnPayloads,
+            timeDepositPageText: dashboardPageText,
           });
 
           if (!hasDeposit(data) && !depositPageText) {
@@ -577,6 +594,7 @@ export function createRakutenConnector(
               depositPageText,
               loanPageText,
               depositTxnPayloads,
+              timeDepositPageText: dashboardPageText ?? depositPageText,
             });
           }
 

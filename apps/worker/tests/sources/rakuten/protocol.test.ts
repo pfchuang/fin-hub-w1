@@ -532,6 +532,38 @@ $200,000
 2026/09 活存明細
 `;
 
+  // 貼近樂天首頁紅卡 readBodyInnerText 的實際形狀：存款總額/活存總額先出現，
+  // 定存總額在後，金額各自獨立一行且可能帶前後空白。
+  const dashboardInnerText = `
+我的帳號
+存款總額
+ $289,441 
+活存總額
+ $89,441 
+年利率  1.500%  累計利息約 $71
+定存總額
+ $200,000 
+活存明細
+`;
+
+  it("parses time deposit total from the dashboard page innerText", () => {
+    const result = parseRakutenData({
+      dashboardPayload: {
+        depositInfo: {
+          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
+        },
+      },
+      timeDepositPageText: dashboardInnerText,
+    });
+    const snapshot = result.bankBalanceSnapshots.find(
+      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
+    );
+    expect(snapshot?.balance).toBe(200_000);
+    // 不可誤抓活存總額 89,441 或存款總額 289,441
+    expect(snapshot?.balance).not.toBe(89_441);
+    expect(snapshot?.balance).not.toBe(289_441);
+  });
+
   it("parses time deposit total from dashboard payload (JSON)", () => {
     const result = parseRakutenData({
       dashboardPayload: {

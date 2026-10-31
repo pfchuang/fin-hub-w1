@@ -45,6 +45,11 @@ export type RakutenPayloads = {
   /** 貸款頁（我的貸款）的頁面文字，貸款 JSON 取不到時的備援。 */
   loanPageText?: string;
   /**
+   * 首頁紅卡 DOM 文字，專供定存總額解析（加密 JSON 內無此欄位）。
+   * 與活存的 depositPageText 分開，避免污染活存文字解析。
+   */
+  timeDepositPageText?: string;
+  /**
    * 臺幣活存明細 API（CTWQU0001/010 當月、CTWQU0001/011 指定月份）的回應，
    * 每個元素是一個月份的 rsData；沒有就不產生交易。
    */
@@ -124,7 +129,9 @@ export function parseRakutenData(
   // JSON 優先，抓不到再從頁面文字備援。餘額 > 0 才建立，沒有定存的人不會多一筆空帳戶。
   const timeDepositBalance =
     timeDepositTotalFromPayload(payloads.dashboardPayload) ??
-    timeDepositTotalFromText(payloads.depositPageText);
+    timeDepositTotalFromText(
+      payloads.timeDepositPageText ?? payloads.depositPageText,
+    );
   const timeDeposits =
     timeDepositBalance !== undefined && timeDepositBalance > 0
       ? [timeDepositSummaryAccount(timeDepositBalance, asOfAt)]
