@@ -519,3 +519,124 @@ describe("Rakuten loan identity", () => {
     });
   });
 });
+
+describe("Rakuten time deposit (aggregate)", () => {
+  const depositWithTimeDepositText = `
+臺幣存款
+活存
+活存總額 0081200000001234
+$89,441
+定存
+定存總額
+$200,000
+2026/09 活存明細
+`;
+
+  it("parses time deposit total from dashboard payload (JSON)", () => {
+    const result = parseRakutenData({
+      dashboardPayload: {
+        depositInfo: {
+          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
+          timeDepositTotal: 200000,
+        },
+      },
+    });
+
+    const timeDeposit = result.bankAccounts.find(
+      (account) => account.accountType === "time_deposit",
+    );
+    expect(timeDeposit).toMatchObject({
+      sourceId: "bank:rakuten:time-deposit:TWD",
+      institutionName: "樂天國際銀行",
+      accountName: "樂天定存",
+      accountType: "time_deposit",
+      currency: "TWD",
+    });
+    const snapshot = result.bankBalanceSnapshots.find(
+      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
+    );
+    expect(snapshot?.balance).toBe(200_000);
+    // 活存帳戶仍在，定存是額外一筆
+    expect(
+      result.bankAccounts.map((account) => account.accountType).sort(),
+    ).toEqual(["savings", "time_deposit"]);
+  });
+
+  it("accepts a thousands-separated string amount", () => {
+    const result = parseRakutenData({
+      dashboardPayload: {
+        depositInfo: {
+          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
+          fixDepBal: "200,000",
+        },
+      },
+    });
+    const snapshot = result.bankBalanceSnapshots.find(
+      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
+    );
+    expect(snapshot?.balance).toBe(200_000);
+  });
+
+  it("falls back to page text when JSON has no time deposit field", () => {
+    const result = parseRakutenData({
+      depositPageText: depositWithTimeDepositText,
+    });
+    const timeDeposit = result.bankAccounts.find(
+      (account) => account.accountType === "time_deposit",
+    );
+    expect(timeDeposit?.sourceId).toBe("bank:rakuten:time-deposit:TWD");
+    const snapshot = result.bankBalanceSnapshots.find(
+      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
+    );
+    expect(snapshot?.balance).toBe(200_000);
+  });
+
+  it("does not create a time deposit account when the total is zero", () => {
+    const result = parseRakutenData({
+      dashboardPayload: {
+        depositInfo: {
+          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
+          timeDepositTotal: 0,
+        },
+      },
+    });
+    expect(
+      result.bankAccounts.some(
+        (account) => account.accountType === "time_deposit",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not create a time deposit account when the field is absent", () => {
+    const result = parseRakutenData({
+      dashboardPayload: {
+        depositInfo: {
+          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
+        },
+      },
+    });
+    expect(
+      result.bankAccounts.some(
+        (account) => account.accountType === "time_deposit",
+      ),
+    ).toBe(false);
+  });
+
+  it("prefers JSON over page text when both are present", () => {
+    const result = parseRakutenData({
+      dashboardPayload: {
+        depositInfo: {
+          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
+          timeDepositTotal: 200000,
+        },
+      },
+      depositPageText: depositWithTimeDepositText,
+    });
+    const snapshots = result.bankBalanceSnapshots.filter(
+      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
+    );
+    // 只有一筆定存快照，不會 JSON + 文字各產一筆
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.balance).toBe(200_000);
+  });
+});

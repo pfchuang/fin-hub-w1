@@ -120,7 +120,17 @@ export function parseRakutenData(
     asOfAt,
   );
 
-  const parsed = [...deposits, ...loans];
+  // 定存只保留一筆彙總帳戶（餘額＝首頁「定存總額」），不展開逐筆合約。
+  // JSON 優先，抓不到再從頁面文字備援。餘額 > 0 才建立，沒有定存的人不會多一筆空帳戶。
+  const timeDepositBalance =
+    timeDepositTotalFromPayload(payloads.dashboardPayload) ??
+    timeDepositTotalFromText(payloads.depositPageText);
+  const timeDeposits =
+    timeDepositBalance !== undefined && timeDepositBalance > 0
+      ? [timeDepositSummaryAccount(timeDepositBalance, asOfAt)]
+      : [];
+
+  const parsed = [...deposits, ...timeDeposits, ...loans];
   const { transactions, stats } = parseRakutenDepositTransactions(
     payloads.depositTxnPayloads ?? [],
     deposits.flatMap((item) =>
@@ -207,6 +217,120 @@ function depositAccountsFromText(
       },
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// 定存彙總（單筆 time_deposit 帳戶，餘額＝首頁「定存總額」）
+// ---------------------------------------------------------------------------
+
+/** 定存彙總帳戶的固定 sourceId：每位使用者僅一筆，逐日覆寫快照。 */
+const TIME_DEPOSIT_SOURCE_ID = "bank:rakuten:time-deposit:TWD";
+
+/** 首頁 dashboard payload 中「定存總額」的候選欄位（白名單，依常見命名排序）。 */
+const TIME_DEPOSIT_TOTAL_KEYS = [
+  "timeDepositTotal",
+  "timeDepTotal",
+  "fixedDepositTotal",
+  "fixDepTotal",
+  "fixedDepositBal",
+  "fixDepBal",
+  "timeDepositBal",
+  "timeDepBal",
+  "totalTimeDeposit",
+  "totalFixedDeposit",
+  "fdTotal",
+  "fdBal",
+] as const;
+
+/** 建立定存彙總帳戶與其餘額快照。 */
+function timeDepositSummaryAccount(
+  balance: number,
+  asOfAt: string,
+): ParsedAccount {
+  return {
+    account: {
+      sourceId: TIME_DEPOSIT_SOURCE_ID,
+      institutionName: "樂天國際銀行",
+      accountName: "樂天定存",
+      accountType: "time_deposit",
+      currency: "TWD",
+      raw: { accountType: "time_deposit", aggregate: true, balance },
+    },
+    snapshot: {
+      accountId: TIME_DEPOSIT_SOURCE_ID,
+      sourceId: snapshotSourceId(
+        `snapshot:rakuten:time-deposit:TWD`,
+        asOfAt,
+      ),
+      balance,
+      currency: "TWD",
+      asOfAt,
+      raw: { balance, aggregate: true },
+    },
+  };
+}
+
+/**
+ * 從首頁 dashboard payload 解析「定存總額」。先找 depositInfo，再找 payload
+ * 本身；任一候選欄位有有效有限數字即採用。找不到回傳 undefined（改走文字備援）。
+ */
+function timeDepositTotalFromPayload(payload: unknown): number | undefined {
+  if (!isRecord(payload)) return undefined;
+  const holders = [
+    isRecord(payload.depositInfo) ? payload.depositInfo : undefined,
+    payload,
+  ].filter((holder): holder is JsonRecord => holder !== undefined);
+  for (const holder of holders) {
+    const amount = firstFiniteAmount(holder, TIME_DEPOSIT_TOTAL_KEYS);
+    if (amount !== undefined) return amount;
+  }
+  return undefined;
+}
+
+/** 在候選欄位中回傳第一個有效有限數字（接受千分位字串）。 */
+function firstFiniteAmount(
+  record: JsonRecord,
+  keys: readonly string[],
+): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (value === undefined || value === null) continue;
+    const text =
+      typeof value === "number"
+        ? String(value)
+        : String(value).replace(/[\s,]/g, "");
+    if (!/^[+-]?\d+(?:\.\d+)?$/.test(text)) continue;
+    const amount = Number(text);
+    if (Number.isFinite(amount)) return amount;
+  }
+  return undefined;
+}
+
+/**
+ * 從頁面文字解析「定存總額」。只接受標籤「定存總額」後鄰近幾行的金額，
+ * 避免抓到其他數字。找不到回傳 undefined。
+ */
+function timeDepositTotalFromText(text: string | undefined): number | undefined {
+  if (!text) return undefined;
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const labelIndex = lines.findIndex(
+    (line) => line.includes("定存總額") || line.includes("定期存款總額"),
+  );
+  if (labelIndex === -1) return undefined;
+  const searchEnd = Math.min(labelIndex + 4, lines.length);
+  for (let i = labelIndex; i < searchEnd; i += 1) {
+    const line = lines[i] ?? "";
+    const amountMatch =
+      line.match(/\$\s*(-?[\d,]+)/) ??
+      (i > labelIndex ? line.match(/^(-?[\d,]+)$/) : null);
+    if (amountMatch?.[1] !== undefined) {
+      return parseAmount(amountMatch[1]);
+    }
+  }
+  return undefined;
 }
 
 function loansFromPayload(payload: unknown): RakutenLoan[] {

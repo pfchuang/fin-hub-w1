@@ -495,6 +495,7 @@ describe("Rakuten log levels and sync summary", () => {
       loanSource: "tap",
       depositAccountCount: 1,
       loanAccountCount: 1,
+      timeDepositAccountCount: 0,
       loanTermCount: 1,
       depositTxnMonthsFetched: 3,
       depositTxnCount: 6,

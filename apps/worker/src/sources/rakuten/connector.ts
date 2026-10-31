@@ -317,6 +317,7 @@ export function createRakutenConnector(
         loanSource: "none",
         depositAccountCount: 0,
         loanAccountCount: 0,
+        timeDepositAccountCount: 0,
         loanTermCount: 0,
         depositTxnMonthsFetched: 0,
         depositTxnCount: 0,
@@ -585,6 +586,9 @@ export function createRakutenConnector(
           summary.loanAccountCount = data.bankAccounts.filter(
             (account) => account.accountType === "loan",
           ).length;
+          summary.timeDepositAccountCount = data.bankAccounts.filter(
+            (account) => account.accountType === "time_deposit",
+          ).length;
           summary.depositSource = hasDeposit(
             parseRakutenData({ dashboardPayload }),
           )
@@ -682,6 +686,8 @@ type RakutenSyncSummary = {
   loanSource: RakutenDataSource;
   depositAccountCount: number;
   loanAccountCount: number;
+  /** 定存彙總帳戶數（0 或 1），加分項，抓不到不影響同步成功判定 */
+  timeDepositAccountCount: number;
   /** 帶有條件（利率、期數等）的貸款數 */
   loanTermCount: number;
   /** 成功讀到活存明細回應的月份數（不論之後是否解析成功） */
