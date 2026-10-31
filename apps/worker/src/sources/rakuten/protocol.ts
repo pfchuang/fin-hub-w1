@@ -45,10 +45,15 @@ export type RakutenPayloads = {
   /** 貸款頁（我的貸款）的頁面文字，貸款 JSON 取不到時的備援。 */
   loanPageText?: string;
   /**
-   * 首頁紅卡 DOM 文字，專供定存總額解析（加密 JSON 內無此欄位）。
+   * 首頁紅卡 DOM 文字，專供定存總額（彙總）解析，是逐筆明細抓不到時的保底。
    * 與活存的 depositPageText 分開，避免污染活存文字解析。
    */
   timeDepositPageText?: string;
+  /**
+   * 定存明細頁（CTWQU0002）的 DOM 表格文字，供逐筆定存解析（帳號末五碼、
+   * 本金、利率、起息／到期日等）。有逐筆資料時優先於彙總。
+   */
+  timeDepositDetailText?: string;
   /**
    * 臺幣活存明細 API（CTWQU0001/010 當月、CTWQU0001/011 指定月份）的回應，
    * 每個元素是一個月份的 rsData；沒有就不產生交易。
@@ -125,17 +130,12 @@ export function parseRakutenData(
     asOfAt,
   );
 
-  // 定存只保留一筆彙總帳戶（餘額＝首頁「定存總額」），不展開逐筆合約。
-  // JSON 優先，抓不到再從頁面文字備援。餘額 > 0 才建立，沒有定存的人不會多一筆空帳戶。
-  const timeDepositBalance =
-    timeDepositTotalFromPayload(payloads.dashboardPayload) ??
-    timeDepositTotalFromText(
-      payloads.timeDepositPageText ?? payloads.depositPageText,
-    );
-  const timeDeposits =
-    timeDepositBalance !== undefined && timeDepositBalance > 0
-      ? [timeDepositSummaryAccount(timeDepositBalance, asOfAt)]
-      : [];
+  // 定存：逐筆明細（CTWQU0002 DOM），每筆帶末五碼與細節。加分項，解析不到
+  // 不影響同步成功，也不退回彙總。
+  const timeDeposits = parseTimeDepositDetails(
+    payloads.timeDepositDetailText,
+    asOfAt,
+  );
 
   const parsed = [...deposits, ...timeDeposits, ...loans];
   const { transactions, stats } = parseRakutenDepositTransactions(
@@ -227,117 +227,139 @@ function depositAccountsFromText(
 }
 
 // ---------------------------------------------------------------------------
-// 定存彙總（單筆 time_deposit 帳戶，餘額＝首頁「定存總額」）
+// 逐筆定存（CTWQU0002 定存明細頁 DOM 表格，每筆一個 time_deposit 帳戶）
 // ---------------------------------------------------------------------------
 
-/** 定存彙總帳戶的固定 sourceId：每位使用者僅一筆，逐日覆寫快照。 */
-const TIME_DEPOSIT_SOURCE_ID = "bank:rakuten:time-deposit:TWD";
+type RakutenTimeDeposit = {
+  accountNo: string;
+  balance: number;
+  ratePct?: number;
+  rateType?: string;
+  openedDate?: string;
+  maturityDate?: string;
+  termLabel?: string;
+  payoutMethod?: string;
+  renewal?: string;
+};
 
-/** 首頁 dashboard payload 中「定存總額」的候選欄位（白名單，依常見命名排序）。 */
-const TIME_DEPOSIT_TOTAL_KEYS = [
-  "timeDepositTotal",
-  "timeDepTotal",
-  "fixedDepositTotal",
-  "fixDepTotal",
-  "fixedDepositBal",
-  "fixDepBal",
-  "timeDepositBal",
-  "timeDepBal",
-  "totalTimeDeposit",
-  "totalFixedDeposit",
-  "fdTotal",
-  "fdBal",
-] as const;
+/**
+ * 解析定存明細頁的表格文字成逐筆定存。每一列（<tr>）的 readBodyInnerText 會是
+ * 連續幾行，順序固定為：帳號、本金($)、利率(x%．利率型態)、
+ * 起息-到期（YYYY/MM/DD-YYYY/MM/DD 到期．N個月）、計息方式、續存設定。
+ * 只認得出帳號＋本金的列才採用，其他欄位缺漏不影響該筆建立。
+ */
+function parseTimeDepositDetails(
+  text: string | undefined,
+  asOfAt: string,
+): ParsedAccount[] {
+  const seen = new Set<string>();
+  const result: ParsedAccount[] = [];
+  for (const deposit of parseTimeDepositRows(text ?? "")) {
+    if (seen.has(deposit.accountNo)) continue;
+    seen.add(deposit.accountNo);
+    result.push(timeDepositAccount(deposit, asOfAt));
+  }
+  return result;
+}
 
-/** 建立定存彙總帳戶與其餘額快照。 */
-function timeDepositSummaryAccount(
-  balance: number,
+/**
+ * 定存明細表格的 readBodyInnerText：每一列是一行，同列各欄以 tab 分隔，
+ * 欄位順序固定為 帳號｜金額｜年利率｜起迄日｜領息方式｜續存方式。
+ * 認得出帳號（10 碼以上數字）＋金額（$）的列才採用，表頭與其他列略過。
+ */
+function parseTimeDepositRows(text: string): RakutenTimeDeposit[] {
+  if (!text) return [];
+  const deposits: RakutenTimeDeposit[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    // 同列欄位以 tab 分隔；容忍連續多個 tab。
+    const cells = rawLine
+      .split(/\t+/)
+      .map((cell) => cell.trim())
+      .filter(Boolean);
+    if (cells.length < 2) continue;
+
+    // 帳號：某一欄是純 10~20 碼數字。
+    const accountCell = cells.find((cell) => /^\d{10,20}$/.test(cell));
+    if (!accountCell) continue;
+    // 金額：某一欄是 $ 數字。
+    const balanceCell = cells.find((cell) => /^\$\s*-?[\d,]+$/.test(cell));
+    if (!balanceCell) continue;
+    const balance = parseAmount(balanceCell.replace(/^\$\s*/, ""));
+    if (!Number.isFinite(balance)) continue;
+
+    const joined = cells.join(" ");
+    const rateMatch = joined.match(/([\d.]+)\s*%/);
+    const rateTypeMatch = joined.match(/%\s*．?\s*(固定利率|機動利率|[^\s]*利率)/);
+    const dateMatch = joined.match(
+      /(\d{4}\/\d{1,2}\/\d{1,2})\s*-\s*(\d{4}\/\d{1,2}\/\d{1,2})/,
+    );
+    const termMatch = joined.match(/到期\s*．?\s*(\d+\s*個月|\d+\s*年[^\s]*)/);
+    const payoutMatch = joined.match(/(到期一次領|按月領息|按月付息|[^\s]*領息)/);
+    const renewalMatch = joined.match(
+      /(不續存|續存本息|續存本金|自動續存[^\s]*)/,
+    );
+
+    deposits.push({
+      accountNo: accountCell,
+      balance,
+      ratePct: rateMatch?.[1] ? Number(rateMatch[1]) : undefined,
+      rateType: rateTypeMatch?.[1]?.trim(),
+      openedDate: dateMatch?.[1] ? normalizeSlashDate(dateMatch[1]) : undefined,
+      maturityDate: dateMatch?.[2]
+        ? normalizeSlashDate(dateMatch[2])
+        : undefined,
+      termLabel: termMatch?.[1]?.replace(/\s+/g, ""),
+      payoutMethod: payoutMatch?.[1]?.trim(),
+      renewal: renewalMatch?.[1]?.trim(),
+    });
+  }
+  return deposits;
+}
+
+/** 帳號只保留末五碼作為顯示名；raw 不存完整帳號。 */
+function timeDepositAccount(
+  deposit: RakutenTimeDeposit,
   asOfAt: string,
 ): ParsedAccount {
+  const last5 = deposit.accountNo.slice(-5);
+  const sourceId = `bank:rakuten:td:${deposit.accountNo}:TWD`;
   return {
     account: {
-      sourceId: TIME_DEPOSIT_SOURCE_ID,
+      sourceId,
       institutionName: "樂天國際銀行",
-      accountName: "樂天定存",
+      accountName: `樂天定存 (${last5})`,
       accountType: "time_deposit",
       currency: "TWD",
-      raw: { accountType: "time_deposit", aggregate: true, balance },
+      ...(deposit.openedDate ? { openedDate: deposit.openedDate } : {}),
+      ...(deposit.maturityDate ? { maturityDate: deposit.maturityDate } : {}),
+      ...(deposit.ratePct !== undefined
+        ? { loanInterestRate: deposit.ratePct }
+        : {}),
+      raw: {
+        accountType: "time_deposit",
+        last5,
+        balance: deposit.balance,
+        ratePct: deposit.ratePct,
+        rateType: deposit.rateType,
+        openedDate: deposit.openedDate,
+        maturityDate: deposit.maturityDate,
+        termLabel: deposit.termLabel,
+        payoutMethod: deposit.payoutMethod,
+        renewal: deposit.renewal,
+      },
     },
     snapshot: {
-      accountId: TIME_DEPOSIT_SOURCE_ID,
+      accountId: sourceId,
       sourceId: snapshotSourceId(
-        `snapshot:rakuten:time-deposit:TWD`,
+        `snapshot:rakuten:td:${deposit.accountNo}:TWD`,
         asOfAt,
       ),
-      balance,
+      balance: deposit.balance,
       currency: "TWD",
       asOfAt,
-      raw: { balance, aggregate: true },
+      raw: { balance: deposit.balance },
     },
   };
-}
-
-/**
- * 從首頁 dashboard payload 解析「定存總額」。先找 depositInfo，再找 payload
- * 本身；任一候選欄位有有效有限數字即採用。找不到回傳 undefined（改走文字備援）。
- */
-function timeDepositTotalFromPayload(payload: unknown): number | undefined {
-  if (!isRecord(payload)) return undefined;
-  const holders = [
-    isRecord(payload.depositInfo) ? payload.depositInfo : undefined,
-    payload,
-  ].filter((holder): holder is JsonRecord => holder !== undefined);
-  for (const holder of holders) {
-    const amount = firstFiniteAmount(holder, TIME_DEPOSIT_TOTAL_KEYS);
-    if (amount !== undefined) return amount;
-  }
-  return undefined;
-}
-
-/** 在候選欄位中回傳第一個有效有限數字（接受千分位字串）。 */
-function firstFiniteAmount(
-  record: JsonRecord,
-  keys: readonly string[],
-): number | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (value === undefined || value === null) continue;
-    const text =
-      typeof value === "number"
-        ? String(value)
-        : String(value).replace(/[\s,]/g, "");
-    if (!/^[+-]?\d+(?:\.\d+)?$/.test(text)) continue;
-    const amount = Number(text);
-    if (Number.isFinite(amount)) return amount;
-  }
-  return undefined;
-}
-
-/**
- * 從頁面文字解析「定存總額」。只接受標籤「定存總額」後鄰近幾行的金額，
- * 避免抓到其他數字。找不到回傳 undefined。
- */
-function timeDepositTotalFromText(text: string | undefined): number | undefined {
-  if (!text) return undefined;
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const labelIndex = lines.findIndex(
-    (line) => line.includes("定存總額") || line.includes("定期存款總額"),
-  );
-  if (labelIndex === -1) return undefined;
-  const searchEnd = Math.min(labelIndex + 4, lines.length);
-  for (let i = labelIndex; i < searchEnd; i += 1) {
-    const line = lines[i] ?? "";
-    const amountMatch =
-      line.match(/\$\s*(-?[\d,]+)/) ??
-      (i > labelIndex ? line.match(/^(-?[\d,]+)$/) : null);
-    if (amountMatch?.[1] !== undefined) {
-      return parseAmount(amountMatch[1]);
-    }
-  }
-  return undefined;
 }
 
 function loansFromPayload(payload: unknown): RakutenLoan[] {

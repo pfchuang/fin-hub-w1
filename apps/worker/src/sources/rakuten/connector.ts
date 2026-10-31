@@ -556,6 +556,10 @@ export function createRakutenConnector(
           );
           summary.depositTxnMonthsFetched = depositTxnPayloads.length;
 
+          // --- 定存明細（存款 → 定存明細）：讀 DOM 表格文字做逐筆定存 ---
+          const timeDepositDetailText =
+            await fetchTimeDepositDetailText(page, syncStartedAt);
+
           stage = "parse_payload";
           switchTimedStage();
           // 呼叫底層共用 parser 轉換標準模型；存款與貸款各自選用 JSON 或文字
@@ -572,6 +576,7 @@ export function createRakutenConnector(
             loanPageText,
             depositTxnPayloads,
             timeDepositPageText: dashboardPageText,
+            timeDepositDetailText,
           });
 
           if (!hasDeposit(data) && !depositPageText) {
@@ -595,6 +600,7 @@ export function createRakutenConnector(
               loanPageText,
               depositTxnPayloads,
               timeDepositPageText: dashboardPageText ?? depositPageText,
+              timeDepositDetailText,
             });
           }
 
@@ -1162,6 +1168,51 @@ async function fetchDepositTransactionPayloads(
     );
   }
   return payloads;
+}
+
+/**
+ * 導覽到定存明細頁（存款 → 定存明細，CTWQU0002）並讀取表格 DOM 文字，供
+ * 逐筆定存解析。定存是加分項：時間預算不足、選單找不到、或讀取失敗都只回傳
+ * undefined，絕不讓同步失敗，也不拋例外中斷主流程。
+ */
+async function fetchTimeDepositDetailText(
+  page: Page,
+  syncStartedAt: number,
+): Promise<string | undefined> {
+  try {
+    // 保留登出與收尾的時間，不讓定存明細侵占。
+    if (txnBudgetMs(syncStartedAt) < MIN_TXN_MONTH_MS) return undefined;
+    await clickRakutenNav(page, { exact: "存款" });
+    await delay(
+      Math.max(
+        0,
+        Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt)),
+      ),
+    );
+    const opened = await clickRakutenNav(page, { exact: "定存明細" });
+    if (!opened) {
+      // 定存是加分項，找不到選單屬正常（有些帳戶沒有定存功能），記資訊即可，
+      // 不發 warn 以免被當成同步異常。
+      console.log(
+        JSON.stringify({ event: "rakuten_time_deposit", step: "nav_missing" }),
+      );
+      return undefined;
+    }
+    await delay(
+      Math.max(
+        0,
+        Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt)),
+      ),
+    );
+    const text = await readBodyInnerText(page);
+    return text || undefined;
+  } catch {
+    // 讀取失敗同樣不當成同步異常，記資訊即可。
+    console.log(
+      JSON.stringify({ event: "rakuten_time_deposit", step: "read_failed" }),
+    );
+    return undefined;
+  }
 }
 
 /** 交易解析結果的筆數統計；只有數字與原因代碼，沒有任何交易內容。 */

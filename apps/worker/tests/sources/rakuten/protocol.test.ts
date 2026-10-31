@@ -520,126 +520,65 @@ describe("Rakuten loan identity", () => {
   });
 });
 
-describe("Rakuten time deposit (aggregate)", () => {
-  const depositWithTimeDepositText = `
-臺幣存款
-活存
-活存總額 0081200000001234
-$89,441
-定存
-定存總額
-$200,000
-2026/09 活存明細
-`;
+describe("Rakuten time deposit (per-contract)", () => {
+  // 貼近定存明細頁 CTWQU0002 表格的 readBodyInnerText：每列一行，欄位以 tab
+  // 分隔，順序為 帳號｜金額｜年利率｜起迄日｜領息方式｜續存方式。
+  const oneRowDetailText = [
+    "定存帳號\t定存金額\t年利率\t定存起迄日\t領息方式\t續存方式",
+    "0082301010359316\t$200,000\t2.2000%．固定利率\t2026/07/05-2027/01/05 到期．6個月\t到期一次領\t不續存",
+  ].join("\n");
 
-  // 貼近樂天首頁紅卡 readBodyInnerText 的實際形狀：存款總額/活存總額先出現，
-  // 定存總額在後，金額各自獨立一行且可能帶前後空白。
-  const dashboardInnerText = `
-我的帳號
-存款總額
- $289,441 
-活存總額
- $89,441 
-年利率  1.500%  累計利息約 $71
-定存總額
- $200,000 
-活存明細
-`;
-
-  it("parses time deposit total from the dashboard page innerText", () => {
+  it("parses a single time deposit with last5, balance and terms", () => {
     const result = parseRakutenData({
-      dashboardPayload: {
-        depositInfo: {
-          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
-        },
-      },
-      timeDepositPageText: dashboardInnerText,
+      timeDepositDetailText: oneRowDetailText,
     });
-    const snapshot = result.bankBalanceSnapshots.find(
-      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
-    );
-    expect(snapshot?.balance).toBe(200_000);
-    // 不可誤抓活存總額 89,441 或存款總額 289,441
-    expect(snapshot?.balance).not.toBe(89_441);
-    expect(snapshot?.balance).not.toBe(289_441);
-  });
-
-  it("parses time deposit total from dashboard payload (JSON)", () => {
-    const result = parseRakutenData({
-      dashboardPayload: {
-        depositInfo: {
-          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
-          timeDepositTotal: 200000,
-        },
-      },
-    });
-
-    const timeDeposit = result.bankAccounts.find(
+    const td = result.bankAccounts.find(
       (account) => account.accountType === "time_deposit",
     );
-    expect(timeDeposit).toMatchObject({
-      sourceId: "bank:rakuten:time-deposit:TWD",
+    expect(td).toMatchObject({
+      sourceId: "bank:rakuten:td:0082301010359316:TWD",
       institutionName: "樂天國際銀行",
-      accountName: "樂天定存",
+      accountName: "樂天定存 (59316)",
       accountType: "time_deposit",
       currency: "TWD",
+      openedDate: "2026-07-05",
+      maturityDate: "2027-01-05",
+      loanInterestRate: 2.2,
+    });
+    expect(td?.raw).toMatchObject({
+      last5: "59316",
+      balance: 200_000,
+      ratePct: 2.2,
+      rateType: "固定利率",
+      termLabel: "6個月",
+      payoutMethod: "到期一次領",
+      renewal: "不續存",
     });
     const snapshot = result.bankBalanceSnapshots.find(
-      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
-    );
-    expect(snapshot?.balance).toBe(200_000);
-    // 活存帳戶仍在，定存是額外一筆
-    expect(
-      result.bankAccounts.map((account) => account.accountType).sort(),
-    ).toEqual(["savings", "time_deposit"]);
-  });
-
-  it("accepts a thousands-separated string amount", () => {
-    const result = parseRakutenData({
-      dashboardPayload: {
-        depositInfo: {
-          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
-          fixDepBal: "200,000",
-        },
-      },
-    });
-    const snapshot = result.bankBalanceSnapshots.find(
-      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
+      (item) => item.accountId === "bank:rakuten:td:0082301010359316:TWD",
     );
     expect(snapshot?.balance).toBe(200_000);
   });
 
-  it("falls back to page text when JSON has no time deposit field", () => {
-    const result = parseRakutenData({
-      depositPageText: depositWithTimeDepositText,
-    });
-    const timeDeposit = result.bankAccounts.find(
-      (account) => account.accountType === "time_deposit",
-    );
-    expect(timeDeposit?.sourceId).toBe("bank:rakuten:time-deposit:TWD");
-    const snapshot = result.bankBalanceSnapshots.find(
-      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
-    );
-    expect(snapshot?.balance).toBe(200_000);
+  it("parses multiple time deposit rows", () => {
+    const twoRows = [
+      oneRowDetailText,
+      "0082301010111222\t$50,000\t1.5000%．機動利率\t2026/08/01-2026/11/01 到期．3個月\t到期一次領\t續存本息",
+    ].join("\n");
+    const result = parseRakutenData({ timeDepositDetailText: twoRows });
+    const tds = result.bankAccounts
+      .filter((account) => account.accountType === "time_deposit")
+      .map((account) => account.accountName)
+      .sort();
+    expect(tds).toEqual(["樂天定存 (11222)", "樂天定存 (59316)"]);
+    const balances = result.bankBalanceSnapshots
+      .filter((item) => item.accountId.startsWith("bank:rakuten:td:"))
+      .map((item) => item.balance)
+      .sort((a, b) => a - b);
+    expect(balances).toEqual([50_000, 200_000]);
   });
 
-  it("does not create a time deposit account when the total is zero", () => {
-    const result = parseRakutenData({
-      dashboardPayload: {
-        depositInfo: {
-          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
-          timeDepositTotal: 0,
-        },
-      },
-    });
-    expect(
-      result.bankAccounts.some(
-        (account) => account.accountType === "time_deposit",
-      ),
-    ).toBe(false);
-  });
-
-  it("does not create a time deposit account when the field is absent", () => {
+  it("does not create a time deposit account when there is no detail text", () => {
     const result = parseRakutenData({
       dashboardPayload: {
         depositInfo: {
@@ -652,23 +591,32 @@ $200,000
         (account) => account.accountType === "time_deposit",
       ),
     ).toBe(false);
+    // 活存仍正常解析
+    expect(
+      result.bankAccounts.some((account) => account.accountType === "savings"),
+    ).toBe(true);
   });
 
-  it("prefers JSON over page text when both are present", () => {
-    const result = parseRakutenData({
-      dashboardPayload: {
-        depositInfo: {
-          depAccounts: [{ acctNo: "0081200000001234", ntdCurrBal: 89441 }],
-          timeDepositTotal: 200000,
-        },
-      },
-      depositPageText: depositWithTimeDepositText,
-    });
-    const snapshots = result.bankBalanceSnapshots.filter(
-      (item) => item.accountId === "bank:rakuten:time-deposit:TWD",
-    );
-    // 只有一筆定存快照，不會 JSON + 文字各產一筆
-    expect(snapshots).toHaveLength(1);
-    expect(snapshots[0]?.balance).toBe(200_000);
+  it("ignores rows without a parseable balance", () => {
+    const noBalance = [
+      "定存帳號\t定存金額\t年利率",
+      "0082301010359316\t利率查詢中\t2.2000%．固定利率",
+    ].join("\n");
+    const result = parseRakutenData({ timeDepositDetailText: noBalance });
+    expect(
+      result.bankAccounts.some(
+        (account) => account.accountType === "time_deposit",
+      ),
+    ).toBe(false);
+  });
+
+  it("deduplicates repeated account numbers", () => {
+    const dup = `${oneRowDetailText}\n${oneRowDetailText}`;
+    const result = parseRakutenData({ timeDepositDetailText: dup });
+    expect(
+      result.bankAccounts.filter(
+        (account) => account.accountType === "time_deposit",
+      ),
+    ).toHaveLength(1);
   });
 });
