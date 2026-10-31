@@ -21,7 +21,7 @@ Catalog 的 `bankCode` 是直接存款銀行代碼的唯一來源：前端資產
 
 各來源的同步、connector、protocol、API client 與專用配對／修復集中於 `apps/worker/src/sources/<connectorId>`。電子發票與集保使用該目錄的 `sync.ts`／`run-repository.ts` 執行 Queue 分段同步；runtime registry 的 `run` 拒絕單次呼叫，避免繞過 durable run 的進度與鎖。手動同步控制、排程、報告與共用資料寫入仍位於 `features/sync`。
 
-前端資料來源頁直接使用 `connectorList`（依 catalog 宣告順序排列）顯示名稱、說明與順序，設定表單直接使用 catalog 的 `credentialFields`（`key`、標籤與 `text`／`password` 輸入類型），前端不另外維護 connector 清單或欄位標籤。catalog 依資料來源加入的時間排列，越新越下面；新增 connector 一律加在 catalog 末尾。
+前端資料來源頁直接使用 `connectorList`（依 catalog 宣告順序排列）顯示名稱、說明與順序，設定表單直接使用 catalog 的 `credentialFields`（`key`、標籤與 `text`／`password`／`select` 輸入類型），前端不另外維護 connector 清單或欄位標籤。`select` 欄位須提供 `options`（`value`／`label`），第一個選項為預設值；欄位未設定視同預設，不算憑證不完整，也不列入 `resetOnCredentialChangeFields`（否則會清掉剛送出的值）。例如台北富邦的 `loginMode`（一般登入／信用卡網路會員）。catalog 依資料來源加入的時間排列，越新越下面；新增 connector 一律加在 catalog 末尾。
 
 ## 連接模式
 
@@ -163,7 +163,7 @@ Puppeteer `TimeoutError` 與暫時性 `net::ERR_*` 網路錯誤；被登出、�
 - `sourceId` 必須在重複同步間穩定。一般交易不得使用本次同步時間產生 ID。
 - `BankBalanceSnapshot.accountId`、`BankTransaction.accountId` 與 `CreditCardBill.accountId` 必須等於對應 `BankAccount.sourceId`。
 - 日期使用 ISO 8601；帳單期間使用 `YYYY-MM`；幣別使用大寫代碼。
-- 存款帳戶名稱：銀行提供帳戶種類、別名或暱稱時，以 `sources/deposit-account-name.ts` 的 `depositAccountName` 組成「名稱 末四碼 xxxx」，方便分辨同銀行的多個帳戶；沒有名稱時沿用各來源的預設名稱。API 顯示層（`features/bank/display.ts`）只保留名稱與末碼以空格分隔、且末碼與 sourceId 帳號結尾一致的名稱（定存也不再重複附加末碼），其他名稱改顯示 sourceId 推得的「末四碼／末五碼 xxxx」。目前使用的欄位：台新 `accountTypeName`／`ACCT_TYPE_NAME`、永豐 `AcctText`、國泰 `accountTypeName`、玉山 `alias`、中信 `accountNickName`、兆豐 `NAME`、華南帳戶類別、第一銀行暱稱、新光暱稱或產品名、凱基暱稱或帳戶類別、王道 `aliasName`／`accountName`／`productName`；富邦、遠東商銀沿用既有「類別 末四碼」名稱。
+- 存款帳戶名稱：銀行提供帳戶種類、別名或暱稱時，以 `sources/deposit-account-name.ts` 的 `depositAccountName` 組成「名稱 末四碼 xxxx」，方便分辨同銀行的多個帳戶；沒有名稱時沿用各來源的預設名稱。API 顯示層（`features/bank/display.ts`）只保留名稱與末碼以空格分隔、且末碼與 sourceId 帳號結尾一致的名稱（定存也不再重複附加末碼），其他名稱改顯示 sourceId 推得的「末四碼／末五碼 xxxx」。目前使用的欄位：台新 `accountTypeName`／`ACCT_TYPE_NAME`、永豐 `AcctText`、國泰 `accountTypeName`、玉山 `alias`、中信 `accountNickName`、兆豐 `NAME`、華南帳戶類別、第一銀行暱稱、新光暱稱或產品名、凱基暱稱或帳戶類別、王道 `aliasName`／`accountName`／`productName`（名稱可能帶完整帳號，先移除 6 碼以上數字再組合）；富邦、遠東商銀沿用既有「類別 末四碼」名稱。
 - `BankTransaction.authorizedAt` 與 `Invoice.invoiceDate`：來源只有日期時使用 `YYYY-MM-DD`；來源確實提供時間時使用含明確時區的 ISO timestamp。不得以補上的午夜或同步時間假造交易時間；台灣來源未標時區的交易時間以 `+08:00` 解讀。
 - 補充交易時間時須保留既有 `sourceId` 算法；`postedDate` 維持入帳日期用途。未入帳轉已入帳或重新同步只提供日期時，須保留同筆交易原有的可靠時間。
 - 多張卡共用一個信用卡帳戶時，以 `BankTransaction.cardLast4` 標示實際刷卡的末四碼；只有能唯一對應到具名卡片時才填 `cardName`，無法確定就留空，不猜測。兩者只供顯示（交易帳戶名稱顯示為「卡名 · 末四碼」，缺卡名時為「帳戶名稱 · 末四碼」），不得納入 `sourceId`、配對或負債計算，也不改變帳戶與帳單的拆分方式。
