@@ -1184,11 +1184,29 @@ async function fetchTimeDepositDetailText(
   try {
     // 保留登出與收尾的時間，不讓定存明細侵占。
     if (txnBudgetMs(syncStartedAt) < MIN_TXN_MONTH_MS) return undefined;
-    // 抓活存明細後頁面已在臺幣存款頁；點一次確保在該頁（已在則無副作用）。
+    // 「臺幣存款」是頂部「存款」選單的子項：必須先點「存款」展開，再點「臺幣存款」
+    // 才會真的切到臺幣存款頁（活存/定存分頁只存在於該頁內）。
+    await clickRakutenNav(page, { exact: "存款" });
     await clickRakutenNav(page, { exact: "臺幣存款" });
-    // 「定存」分頁是臺幣存款頁上的 <a class="nav-link">定存</a>，載入後才渲染。
-    // 用專屬點擊（比嚴格 exact 寬鬆：nav-link 類、文字去空白後等於「定存」），
-    // 重試等它出現。SPA 內切換，不重新載入、不登出。
+    // 等臺幣存款頁載入：出現「活存」分頁才算到位，否則「定存」分頁也還沒渲染。
+    const pageDeadline =
+      Date.now() +
+      Math.max(0, Math.min(DEPOSIT_TXN_WAIT_MS, txnBudgetMs(syncStartedAt)));
+    for (;;) {
+      const onPage = await page
+        .evaluate(() =>
+          // rakuten-twd-deposit-ready：測試 mock 依此辨識
+          Array.from(document.querySelectorAll("a, button")).some(
+            (el) => (el.textContent || "").replace(/\s+/g, "") === "活存",
+          ),
+        )
+        .catch(() => false);
+      if (onPage || Date.now() >= pageDeadline) break;
+      await delay(Math.min(TAP_POLL_MS, Math.max(0, pageDeadline - Date.now())));
+    }
+    // 「定存」分頁是臺幣存款頁上的 <a class="nav-link">定存</a>。用專屬點擊
+    // （比嚴格 exact 寬鬆：文字去空白後等於「定存」），重試等它出現。SPA 內
+    // 切換，不重新載入、不登出。
     let switched = false;
     let navTexts: string[] = [];
     for (let attempt = 0; attempt < 8; attempt += 1) {

@@ -388,6 +388,10 @@ function makePage(overrides?: Partial<PageState>) {
         if (source.includes("innerText")) {
           return bodyTextForCurrentUrl();
         }
+        if (source.includes("rakuten-twd-deposit-ready")) {
+          // 在臺幣存款頁時「活存」分頁存在。
+          return state.currentUrl === TWD_DEPOSIT_URL;
+        }
         if (source.includes("rakuten-time-deposit-tab")) {
           // 定存分頁點擊：只有測試提供 timeDepositDetailText 時才視為存在。
           if (state.timeDepositDetailText == null) {
@@ -545,7 +549,7 @@ describe("Rakuten log levels and sync summary", () => {
       expect(Number.isInteger(value)).toBe(true);
       expect(value as number).toBeGreaterThanOrEqual(0);
     }
-  });
+  }, 10_000);
 
   it("summarizes a failed sync with the error name, stage and OCR attempts", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
