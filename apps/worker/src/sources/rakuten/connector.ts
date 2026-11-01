@@ -1184,22 +1184,28 @@ async function fetchTimeDepositDetailText(
   try {
     // 保留登出與收尾的時間，不讓定存明細侵占。
     if (txnBudgetMs(syncStartedAt) < MIN_TXN_MONTH_MS) return undefined;
-    // 抓活存明細後頁面已在臺幣存款頁；點一次確保在該頁（已在則無副作用），
-    // 定存分頁就在這頁上方。不另加 settle delay，由下方 tab 重試迴圈等待。
+    // 抓活存明細後頁面已在臺幣存款頁；點一次確保在該頁（已在則無副作用）。
     await clickRakutenNav(page, { exact: "臺幣存款" });
-    // 「定存」分頁（<a class="nav-link">定存</a>）是臺幣存款頁載入後才渲染的，
-    // 重試幾次等它出現再點，避免過早點擊 tab_missing。少量重試即可（tab 通常
-    // <1 秒出現），不 poll 到整個交易預算，以免分頁不存在時空等。SPA 內切換，
-    // 不重新載入、不登出（直接 goto ctwqu0002 會使 session 失效）。
+    // 「定存」分頁是臺幣存款頁上的 <a class="nav-link">定存</a>，載入後才渲染。
+    // 用專屬點擊（比嚴格 exact 寬鬆：nav-link 類、文字去空白後等於「定存」），
+    // 重試等它出現。SPA 內切換，不重新載入、不登出。
     let switched = false;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      switched = await clickRakutenNav(page, { exact: "定存" });
+    let navTexts: string[] = [];
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const result = await clickTimeDepositTab(page);
+      switched = result.clicked;
+      navTexts = result.navTexts;
       if (switched || txnBudgetMs(syncStartedAt) < TAP_POLL_MS) break;
       await delay(TAP_POLL_MS);
     }
     if (!switched) {
+      // dump 頁面上的分頁文字，方便診斷實機為何點不到。
       console.log(
-        JSON.stringify({ event: "rakuten_time_deposit", step: "tab_missing" }),
+        JSON.stringify({
+          event: "rakuten_time_deposit",
+          step: "tab_missing",
+          navTexts: navTexts.slice(0, 20),
+        }),
       );
       return undefined;
     }
@@ -1223,6 +1229,41 @@ async function fetchTimeDepositDetailText(
     );
     return undefined;
   }
+}
+
+/**
+ * 點臺幣存款頁上方的「定存」分頁。比 clickRakutenNav 寬鬆：掃所有 a/button，
+ * 文字去除所有空白後等於「定存」即點（容忍 zero-width、前後空白）；排除 modal。
+ * 一併回傳頁面上可見的分頁/連結文字，供 tab_missing 時診斷。
+ */
+async function clickTimeDepositTab(
+  page: Page,
+): Promise<{ clicked: boolean; navTexts: string[] }> {
+  return withActionTimeout(
+    page.evaluate(() => {
+      // rakuten-time-deposit-tab：測試 mock 依此字串辨識這個 evaluate
+      const els = Array.from(
+        document.querySelectorAll<HTMLElement>("a, button"),
+      ).filter((el) => !el.closest(".modal"));
+      // 收集 nav-link 類或短文字連結，供診斷
+      const navTexts = els
+        .filter(
+          (el) =>
+            el.classList.contains("nav-link") ||
+            (el.textContent || "").trim().length <= 6,
+        )
+        .map((el) => (el.textContent || "").replace(/\s+/g, ""))
+        .filter(Boolean);
+      const target = els.find(
+        (el) => (el.textContent || "").replace(/\s+/g, "") === "定存",
+      );
+      if (target) {
+        target.click();
+        return { clicked: true, navTexts };
+      }
+      return { clicked: false, navTexts };
+    }),
+  ).catch(() => ({ clicked: false, navTexts: [] }));
 }
 
 /** 交易解析結果的筆數統計；只有數字與原因代碼，沒有任何交易內容。 */

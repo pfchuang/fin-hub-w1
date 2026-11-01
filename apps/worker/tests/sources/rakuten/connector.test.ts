@@ -388,6 +388,14 @@ function makePage(overrides?: Partial<PageState>) {
         if (source.includes("innerText")) {
           return bodyTextForCurrentUrl();
         }
+        if (source.includes("rakuten-time-deposit-tab")) {
+          // 定存分頁點擊：只有測試提供 timeDepositDetailText 時才視為存在。
+          if (state.timeDepositDetailText == null) {
+            return { clicked: false, navTexts: ["活存"] };
+          }
+          state.onTimeDepositTab = true;
+          return { clicked: true, navTexts: ["活存", "定存"] };
+        }
         if (source.includes("focus")) {
           return undefined;
         }
