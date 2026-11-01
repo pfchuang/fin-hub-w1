@@ -1171,9 +1171,11 @@ async function fetchDepositTransactionPayloads(
 }
 
 /**
- * 導覽到定存明細頁（存款 → 定存明細，CTWQU0002）並讀取表格 DOM 文字，供
- * 逐筆定存解析。定存是加分項：時間預算不足、選單找不到、或讀取失敗都只回傳
- * undefined，絕不讓同步失敗，也不拋例外中斷主流程。
+ * 讀取定存明細表格文字供逐筆定存解析。路徑模擬使用者操作，全程在 SPA 內
+ * 點擊、不重新載入頁面——直接 goto 定存明細 URL 會讓樂天 session 失效被登出。
+ * 作法：確保在臺幣存款（活存明細）頁後，點上方「定存」分頁切到定存明細。
+ * 定存是加分項：時間不足、找不到分頁、或讀取失敗都只回傳 undefined，絕不讓
+ * 同步失敗。須在活存明細抓取之後、登出之前呼叫。
  */
 async function fetchTimeDepositDetailText(
   page: Page,
@@ -1182,29 +1184,35 @@ async function fetchTimeDepositDetailText(
   try {
     // 保留登出與收尾的時間，不讓定存明細侵占。
     if (txnBudgetMs(syncStartedAt) < MIN_TXN_MONTH_MS) return undefined;
+    // 回到臺幣存款頁（活存明細），定存分頁就在這頁上方。已在該頁時點擊無副作用。
     await clickRakutenNav(page, { exact: "存款" });
     await delay(
-      Math.max(
-        0,
-        Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt)),
-      ),
+      Math.max(0, Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt))),
     );
-    const opened = await clickRakutenNav(page, { exact: "定存明細" });
-    if (!opened) {
-      // 定存是加分項，找不到選單屬正常（有些帳戶沒有定存功能），記資訊即可，
-      // 不發 warn 以免被當成同步異常。
+    await clickRakutenNav(page, { exact: "臺幣存款" });
+    await delay(
+      Math.max(0, Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt))),
+    );
+    // 點上方「定存」分頁切到定存明細（SPA 內切換，不重新載入、不登出）。
+    const switched = await clickRakutenNav(page, { exact: "定存" });
+    if (!switched) {
       console.log(
-        JSON.stringify({ event: "rakuten_time_deposit", step: "nav_missing" }),
+        JSON.stringify({ event: "rakuten_time_deposit", step: "tab_missing" }),
       );
       return undefined;
     }
-    await delay(
-      Math.max(
-        0,
-        Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt)),
-      ),
-    );
-    const text = await readBodyInnerText(page);
+    // 等 SPA 把定存表格渲染出來（出現「定存帳號」等表頭），逾時就讀當下內容。
+    const deadline =
+      Date.now() +
+      Math.max(0, Math.min(DEPOSIT_TXN_WAIT_MS, txnBudgetMs(syncStartedAt)));
+    let text = "";
+    for (;;) {
+      text = await readBodyInnerText(page);
+      if (/定存帳號|定存金額|定存起迄/.test(text) || Date.now() >= deadline) {
+        break;
+      }
+      await delay(Math.min(TAP_POLL_MS, Math.max(0, deadline - Date.now())));
+    }
     return text || undefined;
   } catch {
     // 讀取失敗同樣不當成同步異常，記資訊即可。
