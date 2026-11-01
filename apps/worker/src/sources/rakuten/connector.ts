@@ -1184,17 +1184,19 @@ async function fetchTimeDepositDetailText(
   try {
     // 保留登出與收尾的時間，不讓定存明細侵占。
     if (txnBudgetMs(syncStartedAt) < MIN_TXN_MONTH_MS) return undefined;
-    // 回到臺幣存款頁（活存明細），定存分頁就在這頁上方。已在該頁時點擊無副作用。
-    await clickRakutenNav(page, { exact: "存款" });
-    await delay(
-      Math.max(0, Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt))),
-    );
+    // 抓活存明細後頁面已在臺幣存款頁；點一次確保在該頁（已在則無副作用），
+    // 定存分頁就在這頁上方。不另加 settle delay，由下方 tab 重試迴圈等待。
     await clickRakutenNav(page, { exact: "臺幣存款" });
-    await delay(
-      Math.max(0, Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt))),
-    );
-    // 點上方「定存」分頁切到定存明細（SPA 內切換，不重新載入、不登出）。
-    const switched = await clickRakutenNav(page, { exact: "定存" });
+    // 「定存」分頁（<a class="nav-link">定存</a>）是臺幣存款頁載入後才渲染的，
+    // 重試幾次等它出現再點，避免過早點擊 tab_missing。少量重試即可（tab 通常
+    // <1 秒出現），不 poll 到整個交易預算，以免分頁不存在時空等。SPA 內切換，
+    // 不重新載入、不登出（直接 goto ctwqu0002 會使 session 失效）。
+    let switched = false;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      switched = await clickRakutenNav(page, { exact: "定存" });
+      if (switched || txnBudgetMs(syncStartedAt) < TAP_POLL_MS) break;
+      await delay(TAP_POLL_MS);
+    }
     if (!switched) {
       console.log(
         JSON.stringify({ event: "rakuten_time_deposit", step: "tab_missing" }),

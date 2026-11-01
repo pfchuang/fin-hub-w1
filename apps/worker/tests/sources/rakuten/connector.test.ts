@@ -152,6 +152,10 @@ type PageState = {
   modalTexts?: string[];
   depositText?: string;
   loanText?: string;
+  /** 定存明細頁（點「定存」分頁後）的表格文字；未設表示該帳戶無定存分頁。 */
+  timeDepositDetailText?: string;
+  /** 已點過「定存」分頁。 */
+  onTimeDepositTab?: boolean;
   loginClicked: number;
   onLoginClick?: (attempt: number) => void;
   /** 解密後的首頁資料；null 表示網頁沒有送出／攔截不到。 */
@@ -200,6 +204,10 @@ function makePage(overrides?: Partial<PageState>) {
   };
 
   const bodyTextForCurrentUrl = () => {
+    // 已切到「定存」分頁時回定存明細表格文字（優先於活存明細）。
+    if (state.onTimeDepositTab && state.timeDepositDetailText != null) {
+      return state.timeDepositDetailText;
+    }
     if (state.currentUrl.includes("ctwqu0001")) return state.depositText ?? "";
     if (state.currentUrl.includes("clnqu0001")) return state.loanText ?? "";
     return "";
@@ -354,6 +362,14 @@ function makePage(overrides?: Partial<PageState>) {
             }
             return true;
           }
+          // 臺幣存款頁上方「定存」分頁：只有測試提供 timeDepositDetailText 時才
+          // 視為存在（回 true 並讓 innerText 回定存表格），否則回 false 模擬無此
+          // 分頁（connector 會記 tab_missing 並略過定存）。
+          if (spec.exact === "定存") {
+            if (state.timeDepositDetailText == null) return false;
+            state.onTimeDepositTab = true;
+            return true;
+          }
           if (
             spec.exact === "我的貸款" ||
             spec.exact === "貸款" ||
@@ -473,6 +489,10 @@ describe("Rakuten log levels and sync summary", () => {
       onLoginClick: () => {
         browserPage.state.currentUrl = HOME_URL;
       },
+      timeDepositDetailText: [
+        "定存帳號\t定存金額\t年利率\t定存起迄日\t領息方式\t續存方式",
+        "0082301010359316\t$200,000\t2.2000%．固定利率\t2026/07/05-2027/01/05 到期．6個月\t到期一次領\t不續存",
+      ].join("\n"),
     });
     puppeteerMock.launch.mockResolvedValue(browser(browserPage));
 
@@ -495,7 +515,7 @@ describe("Rakuten log levels and sync summary", () => {
       loanSource: "tap",
       depositAccountCount: 1,
       loanAccountCount: 1,
-      timeDepositAccountCount: 0,
+      timeDepositAccountCount: 1,
       loanTermCount: 1,
       depositTxnMonthsFetched: 3,
       depositTxnCount: 6,
