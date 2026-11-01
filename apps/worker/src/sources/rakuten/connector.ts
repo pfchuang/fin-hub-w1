@@ -1184,23 +1184,28 @@ async function fetchTimeDepositDetailText(
   try {
     // 保留登出與收尾的時間，不讓定存明細侵占。
     if (txnBudgetMs(syncStartedAt) < MIN_TXN_MONTH_MS) return undefined;
-    // 定存階段可能從貸款頁(clnqu0001)或首頁(chmqu0001)進來，必須先切到臺幣存款
-    // 頁(ctwqu0001)——活存/定存分頁只存在於該頁。用 URL 判斷是否到位（首頁紅卡
-    // 也有「活存總額」字樣，不能用文字判斷），沒到位就重點「存款→臺幣存款」重試。
+    // 定存階段 connector 停在首頁(chmqu0001)。實機證實頂部「存款→臺幣存款」
+    // 選單在此狀態無法切頁；改點首頁紅卡（存款總額卡）的向右箭頭進臺幣存款頁
+    // (ctwqu0001)——即使用者手動操作的路徑。用 URL 判斷到位（首頁紅卡也有
+    // 「活存/定存總額」字樣，不能用文字判斷）。
     const onTwdDepositPage = () =>
       /\/ctw\/ctwqu0001\b/i.test(page.url());
     const pageDeadline =
       Date.now() +
       Math.max(0, Math.min(DEPOSIT_TXN_WAIT_MS, txnBudgetMs(syncStartedAt)));
     while (!onTwdDepositPage() && Date.now() < pageDeadline) {
-      await clickRakutenNav(page, { exact: "存款" });
-      await delay(
-        Math.max(
-          0,
-          Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt)),
-        ),
-      );
-      await clickRakutenNav(page, { exact: "臺幣存款" });
+      const arrowClicked = await clickDepositOverviewArrow(page);
+      if (!arrowClicked) {
+        // 退而求其次：仍試頂部選單（某些狀態下可行）
+        await clickRakutenNav(page, { exact: "存款" });
+        await delay(
+          Math.max(
+            0,
+            Math.min(DEPOSIT_MENU_SETTLE_MS, txnBudgetMs(syncStartedAt)),
+          ),
+        );
+        await clickRakutenNav(page, { exact: "臺幣存款" });
+      }
       await delay(
         Math.max(
           0,
@@ -1272,6 +1277,35 @@ async function fetchTimeDepositDetailText(
     );
     return undefined;
   }
+}
+
+/**
+ * 點首頁紅卡（存款總額卡）的向右箭頭，進到臺幣存款頁。箭頭是無文字的
+ * <a><i class="icon-arrow-right"></i></a>，故用結構選取：優先紅卡容器
+ * (app-chmqu0001-d010-total-card / .total-card) 內含 icon-arrow-right 的連結，
+ * 退而求其次點頁面上第一個 icon-arrow-right 的祖先連結。排除 modal。
+ */
+async function clickDepositOverviewArrow(page: Page): Promise<boolean> {
+  return withActionTimeout(
+    page.evaluate(() => {
+      // rakuten-overview-arrow：測試 mock 依此辨識
+      const inCard = (el: Element) =>
+        !!el.closest(
+          "[app-chmqu0001-d010-total-card], .total-card, .overview-card",
+        );
+      const icons = Array.from(
+        document.querySelectorAll<HTMLElement>("i.icon-arrow-right"),
+      ).filter((el) => !el.closest(".modal"));
+      // 優先紅卡內的箭頭
+      const icon =
+        icons.find((el) => inCard(el)) ?? icons[0] ?? undefined;
+      if (!icon) return false;
+      const link = icon.closest<HTMLElement>("a, button");
+      if (!link) return false;
+      link.click();
+      return true;
+    }),
+  ).catch(() => false);
 }
 
 /**

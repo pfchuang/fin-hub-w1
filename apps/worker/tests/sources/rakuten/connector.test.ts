@@ -388,6 +388,11 @@ function makePage(overrides?: Partial<PageState>) {
         if (source.includes("innerText")) {
           return bodyTextForCurrentUrl();
         }
+        if (source.includes("rakuten-overview-arrow")) {
+          // 點首頁紅卡箭頭進臺幣存款頁。
+          state.currentUrl = TWD_DEPOSIT_URL;
+          return true;
+        }
         if (source.includes("rakuten-td-diag")) {
           return {
             url: state.currentUrl,
