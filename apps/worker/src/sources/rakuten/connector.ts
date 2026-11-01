@@ -393,7 +393,7 @@ export function createRakutenConnector(
             isRetryable: (error) =>
               error instanceof RakutenActionTimeoutError ||
               (error instanceof RakutenConnectionError &&
-                /^樂天登入頁沒有/.test(error.message)),
+                error.message.startsWith("樂天登入頁沒有")),
             prepare: async (
               browser,
               observePage,
