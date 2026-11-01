@@ -1217,11 +1217,32 @@ async function fetchTimeDepositDetailText(
       await delay(TAP_POLL_MS);
     }
     if (!switched) {
-      // dump 頁面上的分頁文字，方便診斷實機為何點不到。
+      // dump 診斷：當下 URL + 頁面是否含存款頁關鍵字，定位 tab 為何點不到。
+      const diag = await page
+        .evaluate(() => {
+          // rakuten-td-diag：測試 mock 依此辨識
+          const body = document.body?.innerText ?? "";
+          return {
+            url: location.href,
+            hasHuoCun: body.includes("活存"),
+            hasDingCun: body.includes("定存"),
+            hasHuoCunTotal: body.includes("活存總額"),
+          };
+        })
+        .catch(() => ({
+          url: "",
+          hasHuoCun: false,
+          hasDingCun: false,
+          hasHuoCunTotal: false,
+        }));
       console.log(
         JSON.stringify({
           event: "rakuten_time_deposit",
           step: "tab_missing",
+          url: diag.url.split("?")[0],
+          pageHasHuoCun: diag.hasHuoCun,
+          pageHasDingCun: diag.hasDingCun,
+          pageHasHuoCunTotal: diag.hasHuoCunTotal,
           navTexts: navTexts.slice(0, 20),
         }),
       );

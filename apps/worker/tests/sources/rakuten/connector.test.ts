@@ -388,6 +388,14 @@ function makePage(overrides?: Partial<PageState>) {
         if (source.includes("innerText")) {
           return bodyTextForCurrentUrl();
         }
+        if (source.includes("rakuten-td-diag")) {
+          return {
+            url: state.currentUrl,
+            hasHuoCun: true,
+            hasDingCun: false,
+            hasHuoCunTotal: true,
+          };
+        }
         if (source.includes("rakuten-twd-deposit-ready")) {
           // 在臺幣存款頁時「活存」分頁存在。
           return state.currentUrl === TWD_DEPOSIT_URL;
