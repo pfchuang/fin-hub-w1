@@ -516,7 +516,7 @@ describe("Rakuten log levels and sync summary", () => {
       },
       timeDepositDetailText: [
         "定存帳號\t定存金額\t年利率\t定存起迄日\t領息方式\t續存方式",
-        "0082301010359316\t$200,000\t2.2000%．固定利率\t2026/07/05-2027/01/05 到期．6個月\t到期一次領\t不續存",
+        "0082300000123456\t$200,000\t2.2000%．固定利率\t2026/07/05-2027/01/05 到期．6個月\t到期一次領\t不續存",
       ].join("\n"),
     });
     puppeteerMock.launch.mockResolvedValue(browser(browserPage));
