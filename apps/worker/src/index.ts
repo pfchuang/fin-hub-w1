@@ -1,5 +1,6 @@
 import { activityRoutes } from "./features/activity/route";
 import { bankCalculationRoutes } from "./features/bank/calculation-route";
+import { bankNoteRoutes } from "./features/bank/note-route";
 import { bankRoutes } from "./features/bank/route";
 import { classificationRoutes } from "./features/classification/route";
 import { connectorRoutes } from "./features/connectors/route";
@@ -8,7 +9,7 @@ import { exchangeRateRoutes } from "./features/exchange-rates/route";
 import { investmentRoutes } from "./features/investments/route";
 import { invoiceRoutes } from "./features/invoices/route";
 import { manualAssetRoutes } from "./features/manual-assets/route";
-import { mcpRoutes } from "./features/mcp/route";
+import { createMcpRoutes } from "./features/mcp/route";
 import { netWorthRoutes } from "./features/net-worth/route";
 import { notificationRoutes } from "./features/notifications/route";
 import { ocrRoutes } from "./features/ocr/route";
@@ -47,6 +48,7 @@ api.route("/", invoiceRoutes);
 api.route("/", classificationRoutes);
 api.route("/", activityRoutes);
 api.route("/", bankCalculationRoutes);
+api.route("/", bankNoteRoutes);
 api.route("/", dashboardRoutes);
 api.route("/", ocrRoutes);
 api.route("/", investmentRoutes);
@@ -61,7 +63,7 @@ api.route("/", syncRoutes);
 api.onError(apiErrorResponse);
 app.route("/api", api);
 app.use("/mcp", accessMiddleware);
-app.route("/mcp", mcpRoutes);
+app.route("/mcp", createMcpRoutes(api));
 app.get("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default {

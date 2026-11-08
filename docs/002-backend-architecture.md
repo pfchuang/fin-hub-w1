@@ -357,6 +357,14 @@ Drizzle repository 整合測試使用 `apps/worker/tests/helpers/d1.ts` 的 Mini
 兩端相同的計算／分類偏好保留新版既有資料。無對應、配對歧義或偏好衝突時，
 保留原交易及設定；華南亦不再直接清除沒有對應的 legacy 資料。
 
+交易備註存於 `bank_transaction_preferences.note`。`excluded_from_calculation` 為 NULL
+表示使用者沒有選擇計入或排除，只寫備註的列不得影響預設排除、互轉與退款配對；
+判斷使用者計算選擇時看欄位值，不看偏好列是否存在。移轉偏好共用
+`transaction-merge.ts` 的 `PREFERENCE_COPY_ON_CONFLICT`：目標已有的計算選擇優先，
+沒有時補上來源的；備註以完整內容比對，兩端不同時以換行合併保留。
+授權入帳（含中信保留授權、刪除正式副本）由 `card-authorization-write.ts` 將備註搬到目標交易並清除來源備註，
+因為既有配對會在之後的同步重送，複製會把使用者刪掉的舊內容再附加回去；計算選擇仍照舊複製。
+
 0045 套用前須唯讀查核以下三種孤兒引用（包含 separate 的非 NULL transaction_id）：
 
 ```sql
@@ -432,7 +440,7 @@ Request
   → 無狀態 MCP handler（每個 request 建立新的 McpServer）
 ```
 
-MCP 只註冊唯讀工具；Access 只驗證身分、不區分權限，因此不得在 MCP 註冊寫入工具；Managed OAuth 設定與客戶端連線步驟見 [AI 助理連線（MCP）](006-mcp.md)。工具的資料讀取放在 `features/mcp/service.ts`，沿用其他 feature 的 service 與 `shared/` 計算，不另寫查詢或金額邏輯：
+MCP 提供與網頁版相同的存取範圍：查詢工具整理回答所需的資料，其他讀取經 `query_api`（只送 GET、標示 `readOnlyHint`）、編輯與同步經 `call_api`（只接受 POST、PUT、PATCH、DELETE，標示 `destructiveHint`）走 `/api`；讀寫分成兩個工具，讓 AI 助理只在寫入時要求使用者確認。`features/mcp/route.ts` 的 `createMcpRoutes(api)` 由 Composition Root 傳入組裝好的 `/api` app，`features/mcp/api.ts` 在同一個 Worker 內以 `api.fetch` 呼叫，只轉送 Access 身分（`Cf-Access-Jwt-Assertion`、`Cookie`），由 `/api` 的 Access、Demo 唯讀與 Zod 驗證再次把關；不得在 MCP 另寫繞過 `/api` 的寫入工具。`list_api_endpoints` 由 `api.routes` 產生端點清單，說明文字維護於 `features/mcp/api.ts`，新增或修改 API 時同步更新；來源同步的 body 由 `sync/registry.ts` 的 schema 產生。Managed OAuth 設定與客戶端連線步驟見 [AI 助理連線（MCP）](006-mcp.md)。查詢工具的資料讀取放在 `features/mcp/service.ts`，沿用其他 feature 的 service 與 `shared/` 計算，不另寫查詢或金額邏輯：
 
 | 工具                       | 沿用的計算                                                                      |
 | -------------------------- | ------------------------------------------------------------------------------- |
@@ -444,7 +452,7 @@ MCP 只註冊唯讀工具；Access 只驗證身分、不區分權限，因此不
 | `get_upcoming_payments`    | `notifications` 的 `loadPaymentReminders`                                       |
 
 - `get_monthly_cash_flow` 前後各多讀一個月再以活動日期篩選，讓跨月的發票與刷卡配對結果與活動頁一致。
-- 回傳內容會送到使用者選用的 AI 服務：帳號只留末四碼，不回傳內部 ID、`raw_payload` 與來源設定。活動的標題與說明和 App 畫面相同，銀行未提供摘要時可能是交易備註；這是搜尋與分類所需的內容，帳號遮蔽由各來源在正規化時負責。
+- 回傳內容會送到使用者選用的 AI 服務：查詢工具的帳號只留末四碼，不回傳內部 ID、`raw_payload` 與來源設定；`query_api` 與 `call_api` 回傳與網頁版相同的 API 回應。活動的標題與說明和 App 畫面相同，銀行未提供摘要時可能是交易備註；這是搜尋與分類所需的內容，帳號遮蔽由各來源在正規化時負責。
 - 工具錯誤只回通用訊息，細節經 `sanitizeDatabaseError` 消毒後寫入 log；讀取失敗不得以空結果代替，避免 AI 誤判為「沒有資料」。
 
 ## Request 驗證
@@ -625,7 +633,8 @@ X-Next-Cursor: <opaque-cursor>
 
 - 只需帳戶與餘額的頁面使用 `GET /api/bank/accounts`，不載入交易、轉帳配對與分類。
 - 資料來源卡片的設定狀態沿用 `/api/sync-jobs` 的 `configured`；開啟連接器詳情時才讀取 `/api/connectors/:connectorId/settings`。
-- `GET /api/activity/invoice-mappings` 接受與其他區間 API 相同的 `from`／`to` 月份。發票與交易必須同一個台北日才能連結，因此頁面只讀取區間內發票的決定；未帶區間時回傳全部。
+- `GET /api/activity/invoice-mappings` 接受與其他區間 API 相同的 `from`／`to` 月份。連結的交易一定在發票當天或之後，跨日配對的活動以交易日期呈現，因此頁面只讀取區間內發票的決定；未帶區間時回傳全部。
+- 自動配對只在同一天；跨日配對一定是手動建立並存於 `invoice_transaction_preferences`。活動搜尋與 `getActivityItemsInRange` 依日期讀取後，以 `loadLinkedCounterparts` 依 linked 紀錄補讀不在本批的另一端，不以放寬日期範圍處理。補讀的資料只供配對；搜尋以發票命中時一併回傳其連結交易的日期，活動仍只在交易日期呈現一次。
 - 銀行交易分類時，分類規則與第一輪查詢並行，當頁交易的分類覆寫、轉帳候選與退費原消費候選並行；只有頁面外的候選需要再查一次覆寫。退費候選依信用卡帳戶走 `idx_bank_transactions_account_posted_date`，只在當頁有信用卡正數交易時查詢。
 - 各 connector／asset type 的最新持倉統一使用 `db/investment-positions.ts`，以一次 GROUP BY 取得最新日期，不逐列執行 MAX 子查詢。
 - Cloudflare Access 公鑰只在 isolate 記憶體快取；Access 後方的 Worker 無法使用 Cache API。同一 isolate 的並行請求共用同一次下載與匯入後的金鑰。
@@ -950,8 +959,9 @@ connector lock 保留到報告結果寫入及 run 成功結案；失敗的 run t
 - 最多處理 1 個到期工作，讓每個 connector 使用獨立的 Worker invocation 與 subrequest 額度。
 - 每個工作使用獨立 run ID。
 - 成功後更新下次執行時間。
-- 需要 OTP、CAPTCHA 或重新登入時記錄為 `needs_user_action`。
-- 其他錯誤記錄為 `failed`。
+- 需要 OTP、CAPTCHA 或重新登入時記錄為 `needs_user_action`，保留原本的下次執行時間；此狀態不會被挑選，所以時間可能停在過去。
+- 其他錯誤記錄為 `failed`，並更新下次執行時間。
+- 手動同步失敗（含中斷後由 recovery 結案）時，若下次執行時間已過，會推進到下一個排程時段；未過期的時間保留，不延後原排程。這樣工作離開 `needs_user_action` 時，殘留的過期時間不會讓下一次 tick 在非排程時段觸發整輪預設排程。
 - Log 使用結構化 JSON，包含 connector、scope、trigger、status 與 duration。
 
 ## 同步資料寫入
@@ -969,6 +979,13 @@ Connector 不得直接寫入金融資料表。
 5. 在同一批次執行必要的 lifecycle reconciliation、cursor 更新與 staging cleanup。
 
 這樣可避免部分資料已更新、cursor 卻未更新，或 cursor 已更新但資料尚未完整寫入。
+
+快照、交易、帳單與投資交易的 `id` 由寫入當下的帳戶與來源識別組成，conflict columns
+則包含 `account_id`。Lifecycle reconciliation（例如 `card-reconciliation.ts` 把單卡
+摘要帳戶併回實體卡）可以改寫既有列的 `account_id` 並保留 `id`，以免影響交易偏好、
+分類與發票等引用。Promotion 前會把 staging 中同 `id` 既有列的 payload 改用其目前的
+`account_id`，讓來源再次送出舊帳戶的資料時更新同一列，不會撞上 `id` 主鍵。
+改寫其他組成 `id` 的欄位（例如 `source_id`）不在此範圍，需另行處理重送衝突。
 
 永豐信用卡取得 `LatestTx.Items` 與 `OutstandingDetail.Detail` 後，在 `bank_transactions`
 原表保存授權，以 `matched_transaction_id` 記錄已入帳關係，不另設授權表或停用欄位。
@@ -1027,7 +1044,7 @@ Connector 不得直接寫入金融資料表。
 ## 匯率更新
 
 `features/exchange-rates` 的更新流程取得 USD、JPY、EUR，加上有效銀行／信用卡帳戶、
-各 connector／asset type 最新投資持倉與手動資產的其他幣別。帳戶讀取最新餘額，手動資產讀取最新估值；
+各 connector／asset type 最新投資持倉與手動資產的其他幣別。投資持倉先取來源的最新完整快照，已知券商／帳戶／市場／資產類型再跨來源選擇權威快照，同日直接券商優先；API、總覽、匯率清單與金融快照共用這個選擇。識別不完整的持倉保留來源範圍，不按名稱或代號猜測合併。`cost_basis` 與 `unrealized_pnl` 保存來源原幣數值，不加進淨資產；市值、現金與損益欄位可保留小數。`empty:*` 帳戶快照 marker 讓賣出後的零庫存仍可取代較舊的集保持倉。帳戶讀取最新餘額，手動資產讀取最新估值；
 清單與更新流程共用 `shared/exchange-rates.ts`，排除 TWD、NAN 等非有效貨幣代碼並去重，
 只略過實際金額為 0 的資產，不將外幣四捨五入後再判斷。
 `GET /api/exchange-rates/currencies` 回傳預設幣別與有非零金額的資產幣別，避免依賴前端資產列表的分頁。

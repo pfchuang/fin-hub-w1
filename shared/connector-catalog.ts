@@ -251,6 +251,7 @@ export const connectorCatalog = {
       "bank_balance_snapshot",
       "bank_transaction",
       "credit_card_bill",
+      "loan",
     ],
     publicFields: [],
     credentialFields: [
@@ -624,6 +625,33 @@ export const connectorCatalog = {
       "browserSessionExpiresAt",
       "captchaDigitCount",
       "captcha",
+    ],
+  },
+  sinotrade: {
+    id: "sinotrade",
+    title: "永豐金證券",
+    bankCode: null,
+    connectionMode: "browser_per_sync",
+    scopes: ["all"],
+    capabilities: ["investment_position", "investment_transaction"],
+    publicFields: [],
+    credentialFields: [
+      { key: "userId", label: "身分證字號", type: "text" },
+      { key: "password", label: "證券網路密碼", type: "password" },
+    ],
+    secretStateFields: [
+      "userId",
+      "password",
+      "webState",
+      "browserSessionId",
+      "browserSessionExpiresAt",
+      "loginPlatform",
+    ],
+    resetOnCredentialChangeFields: [
+      "webState",
+      "browserSessionId",
+      "browserSessionExpiresAt",
+      "loginPlatform",
     ],
   },
 } as const satisfies Record<string, ConnectorCatalogEntry>;

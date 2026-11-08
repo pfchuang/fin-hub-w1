@@ -61,6 +61,7 @@ const bankTransactionColumns = {
   calculationPreference: sql<
     number | null
   >`${preference.excludedFromCalculation}`.as("calculationPreference"),
+  note: sql<string | null>`${preference.note}`.as("note"),
 };
 
 const creditCardBillColumns = {
@@ -110,6 +111,7 @@ export type BankTransactionPageRow = {
   effectiveDate: string;
   updatedAt: string;
   calculationPreference: number | null;
+  note?: string | null;
   transferPeerId?: string | null;
 };
 
@@ -230,6 +232,18 @@ export async function listBankTransactionsInRange(
               sql`(${bankTransactionDay}) >= ${range.from}`,
               sql`(${bankTransactionDay}) < ${range.to}`,
             ),
+      ),
+    )
+    .orderBy(desc(txn.effectiveDate), desc(txn.updatedAt), desc(txn.id))
+    .all();
+}
+
+export async function listBankTransactionsByIds(db: D1Database, ids: string[]) {
+  return bankTransactionQuery(db)
+    .where(
+      and(
+        visibleBankTransactionFilter,
+        sql`${txn.id} IN (SELECT value FROM json_each(${JSON.stringify(ids)}))`,
       ),
     )
     .orderBy(desc(txn.effectiveDate), desc(txn.updatedAt), desc(txn.id))

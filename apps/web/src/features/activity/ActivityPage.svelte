@@ -16,6 +16,7 @@
     Unlink2,
     ArrowLeft,
     ChevronRight,
+    StickyNote,
     X,
   } from "@lucide/svelte";
   import Button from "@/shared/ui/Button.svelte";
@@ -32,8 +33,10 @@
   } from "@/data/activity/queries";
   import ActivitySearchFilters from "./components/ActivitySearchFilters.svelte";
   import SearchHighlight from "./components/SearchHighlight.svelte";
+  import CategoryBadge from "./components/CategoryBadge.svelte";
   import ActivityAmount from "./components/ActivityAmount.svelte";
   import ActivityCategoryChart from "./components/ActivityCategoryChart.svelte";
+  import ActivityNoteEditor from "./components/ActivityNoteEditor.svelte";
   import CalculationUpdateDialog from "./components/CalculationUpdateDialog.svelte";
   import CategoryUpdateDialog from "./components/CategoryUpdateDialog.svelte";
   import CategoryDetailSheet from "./components/CategoryDetailSheet.svelte";
@@ -83,7 +86,9 @@
   import {
     deduplicateBankTransactions,
     invoiceTransactionCandidates,
+    invoiceTransactionDayGap,
     matchInvoicesToTransactions,
+    MANUAL_INVOICE_MATCH_MAX_DAYS,
   } from "@/data/activity/matching";
   import { getActivityDataStatus } from "./model/load-status";
   import { createCategorySheet } from "./model/category-sheet.svelte";
@@ -648,6 +653,15 @@
       qc.invalidateQueries({ queryKey: queryKeys.bank });
       qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
     },
+  }));
+  const noteMutation = createMutation(() => ({
+    mutationFn: (payload: { transactionId: string; note: string }) =>
+      api.put(
+        `/api/bank/transactions/${encodeURIComponent(payload.transactionId)}/note`,
+        { note: payload.note },
+      ),
+    // 月份與搜尋快取都以 bank 開頭；等重新載入後才結束儲存，避免顯示舊備註。
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.bank }),
   }));
   const invoiceCalculationMutation = createMutation(() => ({
     mutationFn: (payload: {
@@ -1277,20 +1291,33 @@
                           />
                         </p>
                       {/if}
-                      {#if time}<p
-                          class="mt-0.5 text-xs font-medium tabular-nums text-subtle"
+                      {#if item.note}<p
+                          class="mt-1 flex min-w-0 items-center gap-1 text-caption text-subtle"
                         >
-                          {time}
+                          <StickyNote
+                            aria-label="備註"
+                            class="size-3.5 shrink-0"
+                          /><span class="truncate"
+                            ><SearchHighlight
+                              text={item.note}
+                              query={submittedSearch}
+                            /></span
+                          >
                         </p>{/if}
-                      <p
-                        class="mt-0.5 truncate text-caption font-medium text-subtle"
-                      >
-                        {item.institutionName ?? sourceLabel(item)}
-                      </p>
-                      <p class="mt-0.5 truncate text-xs text-subtle">
-                        {[item.accountName, item.category]
-                          .filter(Boolean)
-                          .join(" · ")}
+                      {#if time || item.category}<div
+                          class="mt-1 flex items-center gap-2 text-xs font-medium tabular-nums text-subtle"
+                        >
+                          {#if time}<span class="shrink-0">{time}</span>{/if}
+                          {#if item.category}<CategoryBadge
+                              label={item.category}
+                              categoryId={item.categoryId}
+                              class="py-0 pr-2 font-medium"
+                            />{/if}
+                        </div>{/if}
+                      <p class="mt-1 truncate text-xs text-subtle">
+                        <span class="font-medium"
+                          >{item.institutionName ?? sourceLabel(item)}</span
+                        >{item.accountName ? ` · ${item.accountName}` : ""}
                       </p>
                     </div>
                     <div class="flex shrink-0 items-center gap-1.5">
@@ -1392,6 +1419,19 @@
                             />
                           </p>
                         {/if}
+                        {#if item.note}<p
+                            class="mt-1 flex min-w-0 items-center gap-1 text-caption text-subtle"
+                          >
+                            <StickyNote
+                              aria-label="備註"
+                              class="size-3.5 shrink-0"
+                            /><span class="truncate"
+                              ><SearchHighlight
+                                text={item.note}
+                                query={submittedSearch}
+                              /></span
+                            >
+                          </p>{/if}
                         {#if time}<p
                             class="mt-1 text-caption font-medium tabular-nums text-subtle"
                           >
@@ -1414,7 +1454,10 @@
                             {item.accountName}
                           </p>{/if}</td
                       ><td class="px-4 py-3.5"
-                        ><Badge variant="secondary">{item.category}</Badge></td
+                        ><CategoryBadge
+                          label={item.category}
+                          categoryId={item.categoryId}
+                        /></td
                       ><td class="py-3.5 pl-4"
                         ><div class="flex items-center justify-end gap-2">
                           <div class="min-w-0 text-right">
@@ -1542,9 +1585,11 @@
                   />
                 </p>
               </div>
-              <Badge variant="secondary" class="mt-3"
-                >{detailItem.category}</Badge
-              >
+              <CategoryBadge
+                label={detailItem.category}
+                categoryId={detailItem.categoryId}
+                class="mt-3"
+              />
               {#if detailItem.excludedFromCalculation}<Badge
                   variant="secondary"
                   class="ml-2 mt-3">已排除計算</Badge
@@ -1557,6 +1602,20 @@
                   )}</Badge
                 >{/if}
             </section>
+
+            {#if detailItem.transactionId}
+              {@const transactionId = detailItem.transactionId}
+              {#key activityKey(detailItem)}<ActivityNoteEditor
+                  note={detailItem.note}
+                  title={detailItem.title}
+                  submitting={noteMutation.isPending &&
+                    noteMutation.variables?.transactionId === transactionId}
+                  failed={noteMutation.isError &&
+                    noteMutation.variables?.transactionId === transactionId}
+                  onSave={(note) =>
+                    noteMutation.mutateAsync({ transactionId, note })}
+                />{/key}
+            {/if}
 
             <section class="border-b border-ink/10 py-5">
               <h3 class="text-base font-semibold">來源名稱</h3>
@@ -1681,9 +1740,10 @@
                       >{#each categoryOptions as category (category.id)}<option
                           value={category.id}>{category.label}</option
                         >{/each}</Select
-                    >{:else}<Badge variant="secondary"
-                      >{detailItem.category}</Badge
-                    >{/if}
+                    >{:else}<CategoryBadge
+                      label={detailItem.category}
+                      categoryId={detailItem.categoryId}
+                    />{/if}
                 </div>
 
                 {#if detailItem.transactionId || detailItem.source === "invoice"}<label
@@ -1776,7 +1836,7 @@
                   ? "管理配對"
                   : mappingDialog.step === "confirm"
                     ? "確認合併這兩筆？"
-                    : "選擇同日候選交易"}
+                    : "選擇候選交易"}
               </h2>
               {#if mappingDialog.step === "candidates"}<p
                   class="mt-1 truncate text-sm text-subtle"
@@ -1847,15 +1907,19 @@
               {#if mappingCandidates.length === 0}<div
                   class="rounded-xl border border-dashed border-ink/15 bg-paper p-6 text-center"
                 >
-                  <p class="font-semibold">同一天沒有可配對的支出</p>
+                  <p class="font-semibold">沒有可配對的支出</p>
                   <p class="mt-1 text-caption text-subtle">
-                    只有同一天的 TWD 銀行或信用卡支出會列在這裡。
+                    只列出發票日當天，或 {MANUAL_INVOICE_MATCH_MAX_DAYS} 天內金額相同、尚未配對的
+                    TWD 銀行或信用卡支出。
                   </p>
                 </div>{:else}{#each mappingCandidates as transaction (transaction.id)}{@const difference =
                     mappingDifference(
                       mappingDialog.invoice,
                       transaction,
-                    )}<button
+                    )}{@const dayGap = invoiceTransactionDayGap(
+                    transaction,
+                    mappingDialog.invoice,
+                  )}<button
                     aria-pressed={mappingDialog.transactionId ===
                       transaction.id}
                     class={`min-h-24 rounded-xl border p-4 text-left transition ${mappingDialog.transactionId === transaction.id ? "border-steel bg-steel/10 ring-2 ring-steel/15" : "border-ink/10 hover:border-steel/40 hover:bg-paper"}`}
@@ -1881,7 +1945,7 @@
                     </span>
                     <span class="mt-3 flex flex-wrap items-center gap-2">
                       <Badge variant="secondary" class="bg-moss/10 text-moss"
-                        >同一天</Badge
+                        >{dayGap ? `晚 ${dayGap} 天` : "同一天"}</Badge
                       >
                       {#if difference > 0}<Badge
                           variant="secondary"
@@ -1892,7 +1956,7 @@
                   </button>{/each}{/if}
             </div>
             <p class="mt-4 text-caption text-subtle">
-              依同一天與金額接近排序；商家名稱可能因支付工具而不同，最後由你決定。
+              依日期與金額接近排序；商家名稱可能因支付工具而不同，最後由你決定。
             </p>
             <div class="mt-5 grid grid-cols-[7rem_1fr] gap-3">
               <Button
