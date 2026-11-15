@@ -440,16 +440,17 @@ Request
   → 無狀態 MCP handler（每個 request 建立新的 McpServer）
 ```
 
-MCP 提供與網頁版相同的存取範圍：查詢工具整理回答所需的資料，其他讀取經 `query_api`（只送 GET、標示 `readOnlyHint`）、編輯與同步經 `call_api`（只接受 POST、PUT、PATCH、DELETE，標示 `destructiveHint`）走 `/api`；讀寫分成兩個工具，讓 AI 助理只在寫入時要求使用者確認。`features/mcp/route.ts` 的 `createMcpRoutes(api)` 由 Composition Root 傳入組裝好的 `/api` app，`features/mcp/api.ts` 在同一個 Worker 內以 `api.fetch` 呼叫，只轉送 Access 身分（`Cf-Access-Jwt-Assertion`、`Cookie`），由 `/api` 的 Access、Demo 唯讀與 Zod 驗證再次把關；不得在 MCP 另寫繞過 `/api` 的寫入工具。`list_api_endpoints` 由 `api.routes` 產生端點清單，說明文字維護於 `features/mcp/api.ts`，新增或修改 API 時同步更新；來源同步的 body 由 `sync/registry.ts` 的 schema 產生。Managed OAuth 設定與客戶端連線步驟見 [AI 助理連線（MCP）](006-mcp.md)。查詢工具的資料讀取放在 `features/mcp/service.ts`，沿用其他 feature 的 service 與 `shared/` 計算，不另寫查詢或金額邏輯：
+MCP 提供與網頁版相同的存取範圍：查詢工具整理回答所需的資料，其他讀取經 `query_api`（只送 GET、標示 `readOnlyHint`）、編輯經 `call_api`（只接受 POST、PUT、PATCH、DELETE，標示 `destructiveHint`）、同步經 `sync_sources`（逐一呼叫各來源不帶 body 的 `/connectors/<id>/sync`，交由 Queue 背景執行）走 `/api`；讀寫分成兩個工具，讓 AI 助理只在寫入時要求使用者確認。`features/mcp/route.ts` 的 `createMcpRoutes(api)` 由 Composition Root 傳入組裝好的 `/api` app，`features/mcp/api.ts` 在同一個 Worker 內以 `api.fetch` 呼叫，只轉送 Access 身分（`Cf-Access-Jwt-Assertion`、`Cookie`），由 `/api` 的 Access、Demo 唯讀與 Zod 驗證再次把關；不得在 MCP 另寫繞過 `/api` 的寫入工具。`list_api_endpoints` 由 `api.routes` 產生端點清單，依路徑第一段分成 resource：不帶 `resource` 時只回各類別的端點清單，帶 `resource` 時才回用途與 body 格式（`connectors` 另含資料來源 ID 與帳密欄位）。說明文字維護於 `features/mcp/api.ts` 的 `ENDPOINT_NOTES`，新增或修改 API 時同步更新，缺少說明時 `tests/features/mcp/api-tool.test.ts` 會失敗；`query_api` 的回應超過 `API_RESPONSE_MAX_CHARS` 時只回 `RESPONSE_TOO_LARGE` 與分頁 headers，寫入的回應一律完整回傳；來源同步的 body 由 `sync/registry.ts` 的 schema 產生。Managed OAuth 設定與客戶端連線步驟見 [AI 助理連線（MCP）](006-mcp.md)。查詢工具的資料讀取放在 `features/mcp/service.ts`，沿用其他 feature 的 service 與 `shared/` 計算，不另寫查詢或金額邏輯：
 
-| 工具                       | 沿用的計算                                                                      |
-| -------------------------- | ------------------------------------------------------------------------------- |
-| `get_financial_overview`   | `sync/reports` 的 `calculateCurrentFinancialSnapshot`，淨資產公式與總覽頁相同   |
-| `list_accounts`            | `bank` 的 `getBankAccounts` 與 `manual-assets`                                  |
-| `list_investment_holdings` | `investments` 的最新持倉                                                        |
-| `get_monthly_cash_flow`    | `activity` 的 `getActivityItemsInRange` 與 `shared/activity/flow.ts` 的收支加總 |
-| `search_activity`          | `activity` 的 `searchActivity`                                                  |
-| `get_upcoming_payments`    | `notifications` 的 `loadPaymentReminders`                                       |
+| 工具                       | 沿用的計算                                                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `get_financial_overview`   | `sync/reports` 的 `calculateCurrentFinancialSnapshot`，淨資產公式與總覽頁相同                                                 |
+| `list_accounts`            | `bank` 的 `getBankAccounts` 與 `manual-assets`                                                                                |
+| `list_investment_holdings` | `investments` 的最新持倉，排除來源沒有持倉時寫入的零值佔位列                                                                  |
+| `get_monthly_cash_flow`    | `activity` 的 `getActivityItemsInRange` 與 `shared/activity/flow.ts` 的收支加總；帶 `from`、`to` 時一次讀取整段區間再逐月加總 |
+| `search_activity`          | `activity` 的 `searchActivity`，分頁 cursor 與 `GET /activity/search` 相同；關鍵字可省略（須帶 `from`），分類以顯示名稱篩選   |
+| `get_upcoming_payments`    | `notifications` 的 `loadPaymentReminders`                                                                                     |
+| `get_sync_status`          | `sync/scheduling` 的 `getSyncJobs`，只列已設定的來源                                                                          |
 
 - `get_monthly_cash_flow` 前後各多讀一個月再以活動日期篩選，讓跨月的發票與刷卡配對結果與活動頁一致。
 - 回傳內容會送到使用者選用的 AI 服務：查詢工具的帳號只留末四碼，不回傳內部 ID、`raw_payload` 與來源設定；`query_api` 與 `call_api` 回傳與網頁版相同的 API 回應。活動的標題與說明和 App 畫面相同，銀行未提供摘要時可能是交易備註；這是搜尋與分類所需的內容，帳號遮蔽由各來源在正規化時負責。
@@ -550,6 +551,8 @@ X-Next-Cursor: <opaque-cursor>
 
 只有 `X-Has-More` 為 `true` 時，才需要回傳 `X-Next-Cursor`。
 
+`GET /api/bank` 帶月份區間（`month` 或 `from`、`to`）時預設一次回傳整段，供網頁版配對與統計使用；同時帶 `limit` 或 `cursor` 時改在該區間內分頁，讓 MCP 的 `query_api` 能在回應大小上限內讀取交易較多的月份。
+
 ## 銀行交易分類與退費
 
 `features/bank/service.ts` 回傳交易時依序決定分類：年費減免沖銷（`auto_offset`）、
@@ -637,6 +640,8 @@ X-Next-Cursor: <opaque-cursor>
 - 自動配對只在同一天；跨日配對一定是手動建立並存於 `invoice_transaction_preferences`。活動搜尋與 `getActivityItemsInRange` 依日期讀取後，以 `loadLinkedCounterparts` 依 linked 紀錄補讀不在本批的另一端，不以放寬日期範圍處理。補讀的資料只供配對；搜尋以發票命中時一併回傳其連結交易的日期，活動仍只在交易日期呈現一次。
 - 銀行交易分類時，分類規則與第一輪查詢並行，當頁交易的分類覆寫、轉帳候選與退費原消費候選並行；只有頁面外的候選需要再查一次覆寫。退費候選依信用卡帳戶走 `idx_bank_transactions_account_posted_date`，只在當頁有信用卡正數交易時查詢。
 - 各 connector／asset type 的最新持倉統一使用 `db/investment-positions.ts`，以一次 GROUP BY 取得最新日期，不逐列執行 MAX 子查詢。
+- `GET /api/history/net-worth/chart` 將集保的台股 `stock` 與直接券商的 `tw_stock` 合併為同一個 `tw-stock` 序列：集保有資料的日期以集保為準，集保最後一天之後或未連接集保時才用券商台股（同日相加）。前端逐序列沿用前值，分成兩個序列會把集保舊值與券商新值重複相加。
+- 同一支 API 另輸出股票投入成本（`assetType = stock_cost`、`source = cost`，台幣），不另存讀模型：以直接券商最新快照的台股成本為基準，依成交往回推（扣掉之後的買進金額、加回之後賣出部位的原始成本 `raw.realizedCost`），每個成交日一點的階梯序列；最早成交以前沿用回推到的成本。賣出的原始成本缺漏或為 0（券商查不到）時不再往前推。海外成本只取快照日的來源成本，以目前匯率換算，從海外市值進入走勢那天起計入。集保有不屬於直接券商帳戶的持股、最新快照有缺成本的持倉或外幣缺少匯率時不輸出，避免市值與成本範圍不一致。
 - Cloudflare Access 公鑰只在 isolate 記憶體快取；Access 後方的 Worker 無法使用 Cache API。同一 isolate 的並行請求共用同一次下載與匯入後的金鑰。
 - 以日期 expression 篩選區間時，需同時保留可走索引的原始欄位範圍條件，並以 EXPLAIN QUERY PLAN 確認。
 
@@ -751,7 +756,7 @@ sources/
 | `transaction-merge.ts`、`card-reconciliation.ts` | 共用舊交易合併與單卡摘要帳戶修復；保留使用者偏好、分類與發票關聯。                                                                                                                                                                                                                 |
 | `crypto-holdings-write.ts`                       | 加密貨幣交易所的當天完整持倉快照：設定版本 guard、刪除同 connector 當天持倉、promotion 新列與淨資產歷史在同一 batch。                                                                                                                                                              |
 
-Worker 的 `sources/<connectorId>/sync.ts` 負責設定解密、connector 呼叫與同步資料寫入；單次銀行流程也處理互動式 challenge，override 型別與來源 colocate。`ctbc/authorizations.ts` 管信用卡授權合併，`hncb/repository.ts` 管華南舊交易／帳戶修復，`nextbank/deposits.ts` 與 `obank/time-deposits.ts` 管存款生命週期。共用同步管理留在 `features/sync`，來源之間共用的外部取資料工具留在 `sources` 根目錄（例如加密貨幣來源共用的 `crypto-holdings.ts` 正規化、`crypto-prices.ts` MAX 公開報價與 `crypto-browser-egress.ts` Browser Run 代發的瀏覽器端；Durable Object 介面在 `platform/crypto-browser-egress.ts`）。
+Worker 的 `sources/<connectorId>/sync.ts` 負責設定解密、connector 呼叫與同步資料寫入；單次銀行流程也處理互動式 challenge，override 型別與來源 colocate。`ctbc/authorizations.ts` 管信用卡授權合併，`hncb/repository.ts` 管華南舊交易／帳戶修復，`nextbank/deposits.ts` 與 `obank/time-deposits.ts` 管存款生命週期。`nextbank/transactions.ts` 管交易識別變更後的舊列合併。共用同步管理留在 `features/sync`，來源之間共用的外部取資料工具留在 `sources` 根目錄（例如加密貨幣來源共用的 `crypto-holdings.ts` 正規化、`crypto-prices.ts` MAX 公開報價與 `crypto-browser-egress.ts` Browser Run 代發的瀏覽器端；Durable Object 介面在 `platform/crypto-browser-egress.ts`）。
 
 中信的固定裝置識別、銀行發出的裝置 seed 與短期兩階段登入暫存只保存於加密設定。
 `ctbc/sync.ts` 以設定版本 CAS 在初始化前保存裝置 ID、首次握手後登入前保存 seed；

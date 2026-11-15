@@ -40,6 +40,9 @@ const PAGINATION =
 const SCHEDULE_FIELDS =
   "intervalMinutes 為支援的同步間隔分鐘數，preferredTime 為 HH:mm，preferredWeekdays 為 0–6（0 為週日）";
 
+const SYNC_USAGE =
+  "同步請改用 sync_sources 工具（背景執行、自動處理驗證碼），結果以 get_sync_status 查詢；只有使用者要親自輸入驗證碼或 OTP 時，才以 call_api 呼叫 /connectors/<id>/captcha 與帶 body 的 /connectors/<id>/sync。";
+
 const ENDPOINT_NOTES: Record<string, string> = {
   "GET /runtime": "部署模式（是否為 Demo）。",
   "GET /summary": "總覽頁摘要。",
@@ -88,7 +91,8 @@ const ENDPOINT_NOTES: Record<string, string> = {
   "PUT /bank/accounts/:id/payment-account":
     "設定信用卡或貸款的扣款帳戶。body：paymentAccountId（存款帳戶 ID，或 null 取消）。",
   "DELETE /bank/accounts/:id/payment-account": "取消扣款帳戶設定。",
-  "GET /bank": `銀行帳戶與交易。${MONTH_RANGE}`,
+  "GET /bank":
+    "銀行帳戶與交易，由新到舊。query：month=YYYY-MM，或 from、to=YYYY-MM；可加 limit（1–100）、cursor 在該區間內分頁，省略月份時對全部交易分頁（cursor 取自回應的 X-Next-Cursor）。交易多的月份請帶 limit（建議 30），每頁都含完整的 accounts。",
   "GET /bank/bills": `信用卡帳單。${MONTH_RANGE}`,
   "PATCH /bank/transactions/:transactionId/calculation":
     "設定交易是否排除統計。body：excludedFromCalculation（boolean）。",
@@ -107,6 +111,15 @@ const ENDPOINT_NOTES: Record<string, string> = {
   "PUT /notifications/preferences":
     "通知偏好。body：success、failed、needsUserAction、paymentDue?（皆為 boolean）。",
   "POST /notifications/test": "傳送測試推播。",
+  "POST /connectors/sinotrade/connect":
+    "開始永豐金證券連線，開啟官方登入頁。body：platform?（newweb、savings，預設 newweb）。登入與憑證、OTP 驗證須由使用者在網頁版的資料來源面板親自完成，AI 助理通常不使用。",
+  "POST /connectors/sinotrade/connect/status":
+    "永豐金證券連線進度與待完成的驗證步驟，屬於網頁版連線流程。",
+  "POST /connectors/sinotrade/connect/verify":
+    "送出永豐金證券連線的驗證步驟，屬於網頁版連線流程。body：action（confirm_certificate、submit_birthday、request_otp、verify_otp、accept_terms）、values?。",
+  "POST /connectors/sinotrade/connect/complete":
+    "使用者登入後儲存永豐金證券的連線狀態，屬於網頁版連線流程。",
+  "POST /connectors/sinotrade/connect/cancel": "取消進行中的永豐金證券連線。",
   "GET /connectors/:connectorId/settings":
     "資料來源設定狀態（不含帳密）。connectorId 見 connectors。",
   "PUT /connectors/:connectorId/settings":
@@ -119,7 +132,8 @@ const ENDPOINT_NOTES: Record<string, string> = {
   "POST /connectors/tdcc/sync/trades": "只同步集保交易，body 同上。",
   "GET /sync-schedule": "預設排程。",
   "PUT /sync-schedule": `修改預設排程。body：intervalMinutes、preferredTime、preferredWeekdays（${SCHEDULE_FIELDS}）。`,
-  "GET /sync-jobs": "各資料來源的排程與上次同步狀態。",
+  "GET /sync-jobs":
+    "各資料來源的排程與同步狀態。running 為 true 表示排隊或執行中；背景同步的結果見 manualRun 的 status、errorCode、lastError（電子發票與集保見 lastStatus、lastError）。",
   "PATCH /sync-jobs/:connectorId/:scope": `修改單一來源排程，scope 為 all。body：enabled?、nextRunAt?（ISO 時間）、scheduleMode?（inherit、custom）、intervalMinutes?、preferredTime?、preferredWeekdays?（${SCHEDULE_FIELDS}）。`,
   "GET /sync-reports/latest": "最新一次排程同步報告。",
   "GET /sync-reports/:batchId/activities": "同步報告的活動變化明細。",
@@ -136,12 +150,12 @@ function connectorRouteNote(path: string) {
   const title = connectorCatalog[id].title;
   if (match[2] === "captcha")
     return {
-      note: `取得${title}的登入驗證碼，回應含驗證碼圖片；辨識後將答案帶入 POST /connectors/${id}/sync。`,
+      note: `取得${title}的登入驗證碼圖片，供使用者親自輸入後帶入 POST /connectors/${id}/sync。一般同步會自動辨識驗證碼，不需要呼叫；每次呼叫會保留 Browser 約 2.5 分鐘並消耗每日額度，只在使用者要求手動輸入驗證碼時使用。`,
     };
   const body = manualSyncBody(id);
   return body
     ? {
-        note: `同步${title}。不帶 body 時交由 Queue 背景執行；帶驗證碼或 OTP 時在請求內完成登入與同步。`,
+        note: `同步${title}。一般不帶 body，交由 Queue 背景執行並自動處理驗證碼；只有使用者提供驗證碼或 OTP 時才帶 body，在請求內完成登入與同步。`,
         body: z.toJSONSchema(body.schema, {
           io: "input",
           unrepresentable: "any",
@@ -150,35 +164,95 @@ function connectorRouteNote(path: string) {
     : { note: `同步${title}（Queue 背景執行）。` };
 }
 
-export function listApiEndpoints(api: ApiApp) {
+/** 回應超過此字元數時不回傳內容，避免單次讀取占滿 AI 助理的 context。 */
+export const API_RESPONSE_MAX_CHARS = 60_000;
+
+const API_USAGE =
+  "GET 以 query_api 呼叫，其餘方法以 call_api 呼叫；路徑中的 :param 替換為實際值。回應與網頁版 /api 相同，錯誤為 { success: false, error: { code, message } }。";
+
+/**
+ * 不帶 resource 時只回各類別的端點清單；帶 resource（路徑第一段，例如 bank）時
+ * 才回該類端點的用途與 body 格式，資料來源 ID 與帳密欄位在 connectors。
+ */
+export function listApiEndpoints(api: ApiApp, resource?: string) {
   const seen = new Set<string>();
-  const endpoints = [];
+  const byResource = new Map<string, { method: string; path: string }[]>();
   for (const { method, path } of api.routes) {
     if (!(API_METHODS as readonly string[]).includes(method)) continue;
     const key = `${method} ${path}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    endpoints.push({
+    const name = path.split("/")[1] ?? "";
+    byResource.set(name, [...(byResource.get(name) ?? []), { method, path }]);
+  }
+  const selected =
+    resource === undefined ? undefined : byResource.get(resource);
+  if (!selected)
+    return {
+      usage: `${API_USAGE}以 resource 指定下列其中一類，取得端點的用途、query 與 body 格式。`,
+      sync: SYNC_USAGE,
+      ...(resource === undefined
+        ? {}
+        : { error: `找不到 resource「${resource}」，請從 resources 擇一。` }),
+      resources: [...byResource].map(([name, endpoints]) => ({
+        resource: name,
+        endpoints: endpoints.map(({ method, path }) => `${method} ${path}`),
+      })),
+    };
+  return {
+    usage: API_USAGE,
+    sync: SYNC_USAGE,
+    endpoints: selected.map(({ method, path }) => ({
       method,
       path,
-      ...(connectorRouteNote(path) ?? { note: ENDPOINT_NOTES[key] }),
-    });
-  }
-  return {
-    usage:
-      "GET 以 query_api 呼叫，其餘方法以 call_api 呼叫；路徑中的 :param 替換為實際值。回應與網頁版 /api 相同，錯誤為 { success: false, error: { code, message } }。",
-    endpoints,
-    connectors: Object.values(connectorCatalog).map((entry) => ({
-      id: entry.id,
-      title: entry.title,
-      credentialFields: entry.credentialFields.map(
-        ({ key, type, options }: ConnectorCredentialField) => ({
-          key,
-          type,
-          ...(options ? { options: options.map(({ value }) => value) } : {}),
-        }),
-      ),
+      ...(connectorRouteNote(path) ?? {
+        note: ENDPOINT_NOTES[`${method} ${path}`],
+      }),
     })),
+    ...(resource === "connectors"
+      ? {
+          connectors: Object.values(connectorCatalog).map((entry) => ({
+            id: entry.id,
+            title: entry.title,
+            credentialFields: entry.credentialFields.map(
+              ({ key, type, options }: ConnectorCredentialField) => ({
+                key,
+                type,
+                ...(options
+                  ? { options: options.map(({ value }) => value) }
+                  : {}),
+              }),
+            ),
+          })),
+        }
+      : {}),
+  };
+}
+
+export type ApiCallResult = {
+  status: number;
+  headers: Record<string, string>;
+  body: unknown;
+};
+
+/**
+ * 工具回傳的文字。讀取的回應過大時只回狀態與縮小範圍的提示；
+ * 寫入已經生效，回應一律完整回傳。
+ */
+export function serializeApiResult(method: ApiMethod, result: ApiCallResult) {
+  const text = JSON.stringify(result);
+  if (method !== "GET" || text.length <= API_RESPONSE_MAX_CHARS)
+    return { text, tooLarge: false };
+  return {
+    tooLarge: true,
+    text: JSON.stringify({
+      status: result.status,
+      headers: result.headers,
+      error: {
+        code: "RESPONSE_TOO_LARGE",
+        message: `回應共 ${text.length} 字元，超過上限 ${API_RESPONSE_MAX_CHARS}，未回傳內容。請改以 limit 搭配 cursor 分頁、縮小 month 或 from、to 的範圍，或改用 search_activity 等查詢工具。`,
+      },
+    }),
   };
 }
 
@@ -189,7 +263,7 @@ export async function callApi(
   env: Env,
   executionCtx: ApiExecutionContext,
   input: ApiCallInput,
-) {
+): Promise<ApiCallResult> {
   // 只替換 pathname，避免 "//host" 之類的路徑改變請求的主機。
   const url = new URL(source.url);
   url.pathname = input.path;
@@ -228,4 +302,50 @@ export async function callApi(
     }),
   );
   return { status: response.status, headers: returnedHeaders, body };
+}
+
+export type SyncStartResult =
+  | { connectorId: ConnectorId; queued: true }
+  | {
+      connectorId: ConnectorId;
+      queued: false;
+      error: { code: string; message: string };
+    };
+
+/**
+ * 逐一呼叫各來源不帶 body 的同步端點，交由 Queue 背景執行；
+ * 單一來源被拒絕（未設定、同步中）不影響其他來源。
+ */
+export async function startSyncs(
+  api: ApiApp,
+  source: Request,
+  env: Env,
+  executionCtx: ApiExecutionContext,
+  connectorIds: readonly ConnectorId[],
+): Promise<SyncStartResult[]> {
+  const results: SyncStartResult[] = [];
+  for (const connectorId of new Set(connectorIds)) {
+    const { status, body } = await callApi(api, source, env, executionCtx, {
+      method: "POST",
+      path: `/connectors/${connectorId}/sync`,
+    });
+    if (status < 400) {
+      results.push({ connectorId, queued: true });
+      continue;
+    }
+    const error = (body as { error?: { code?: unknown; message?: unknown } })
+      ?.error;
+    results.push({
+      connectorId,
+      queued: false,
+      error: {
+        code: typeof error?.code === "string" ? error.code : "SYNC_FAILED",
+        message:
+          typeof error?.message === "string"
+            ? error.message
+            : "無法開始同步，請稍後再試。",
+      },
+    });
+  }
+  return results;
 }
